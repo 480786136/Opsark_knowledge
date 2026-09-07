@@ -1,0 +1,45 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD: ${KNOWLEDGE_DB_PASSWORD:?set KNOWLEDGE_DB_PASSWORD}
+      POSTGRES_DB: knowledge
+    volumes: [knowledge-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U knowledge]
+      interval: 5s
+      retries: 12
+  api:
+    build: .
+    environment: &knowledge-env
+      DATABASE_URL: postgresql+psycopg://knowledge:${KNOWLEDGE_DB_PASSWORD}@db:5432/knowledge
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:?set KNOWLEDGE_SERVICE_TOKEN}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      EMBEDDING_INDEX_VERSION: ${EMBEDDING_INDEX_VERSION:-default-v1}
+    command: [sh, -c, 'alembic upgrade head && exec uvicorn knowledge.main:app --host 0.0.0.0 --port 8002 --workers 1']
+    depends_on:
+      db: {condition: service_healthy}
+    ports: ['127.0.0.1:8002:8002']
+    networks:
+      default: {}
+      services: {aliases: [knowledge-api]}
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8002/health/live")']
+      interval: 5s
+      retries: 12
+  worker:
+    build: .
+    environment: *knowledge-env
+    command: [python, -m, knowledge.processing]
+    depends_on:
+      api: {condition: service_healthy}
+volumes:
+  knowledge-db:
+networks:
+  services:
+    external: true
+    name: opsark-services

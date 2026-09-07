@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "opsark-knowledge"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "sqlalchemy>=2.0.40,<2.1",
+  "alembic>=1.15,<2", "pydantic-settings>=2.8,<3", "httpx>=0.28,<1",
+  "psycopg[binary]>=3.2,<4", "pgvector>=0.4,<1", "jieba>=0.42.1,<1",
+]
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "ruff>=0.11,<1"]
+[tool.setuptools.packages.find]
+include = ["knowledge*"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
