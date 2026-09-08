@@ -8,6 +8,15 @@ from .db import SessionLocal
 from .models import Chunk, Document, DocumentVersion, Job, SourceRecord, new_id
 
 
+class IndexConfigurationMismatch(Exception):
+    pass
+
+
+def require_index_config(expected):
+    if expected != index_id():
+        raise IndexConfigurationMismatch()
+
+
 def index_id():
     s = settings()
     if not s.embedding_enabled:
@@ -147,11 +156,18 @@ def run_once(factory=SessionLocal):
                         DocumentVersion.version == revision,
                     )
                 )
-                content, version_id = version.content, version.id
+                content, version_id, expected_index = (
+                    version.content,
+                    version.id,
+                    version.index_version,
+                )
+            require_index_config(expected_index)
             parts = chunks(content)
             for offset in range(0, len(parts), 8):
+                require_index_config(expected_index)
                 batch = parts[offset : offset + 8]
                 vectors = embed([x[0] for x in batch])
+                require_index_config(expected_index)
                 prepared.extend(zip(batch, vectors))
                 with factory() as db:
                     alive = db.execute(
@@ -179,6 +195,7 @@ def run_once(factory=SessionLocal):
                         db.add(draft(record))
                     record.status = "ready_for_review"
             else:
+                require_index_config(expected_index)
                 doc = db.get(Document, target)
                 if doc.status != "indexing":
                     job.status = "cancelled"
@@ -199,12 +216,13 @@ def run_once(factory=SessionLocal):
                     db.get(SourceRecord, doc.source_record_id).status = "processed"
             job.status, job.error = "done", None
             db.commit()
-    except Exception:
+    except Exception as exc:
         with factory() as db:
             job = db.get(Job, job_id)
             if job.lease_token == lease and job.status == "running":
-                job.status = "failed" if job.attempts >= 3 else "pending"
-                job.error = "PROCESSING_FAILED"  # never persist provider exception bodies / keys
+                mismatch = isinstance(exc, IndexConfigurationMismatch)
+                job.status = "failed" if mismatch or job.attempts >= 3 else "pending"
+                job.error = "INDEX_CONFIG_MISMATCH" if mismatch else "PROCESSING_FAILED"
                 if job.status == "failed":
                     obj = db.get(SourceRecord if kind == "draft" else Document, target)
                     obj.status = "failed"

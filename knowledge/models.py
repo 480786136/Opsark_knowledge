@@ -141,3 +141,18 @@ class Audit(Base):
     action: Mapped[str] = mapped_column(String(100))
     target: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class KnowledgeAdmin(Base):
+    __tablename__ = "knowledge_admins"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    username: Mapped[str] = mapped_column(String(100), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+
+
+class KnowledgeSession(Base):
+    __tablename__ = "knowledge_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    admin_id: Mapped[str] = mapped_column(ForeignKey("knowledge_admins.id"))
+    csrf: Mapped[str] = mapped_column(String(100))
+    expires: Mapped[float] = mapped_column(Float)

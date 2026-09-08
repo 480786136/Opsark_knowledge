@@ -3,10 +3,12 @@ import re
 import secrets
 import time
 import uuid
+from pathlib import Path
 import jieba
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select, update, inspect, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
@@ -62,7 +64,11 @@ def data(row):
 def audit(db, request, action, target):
     db.add(
         Audit(
-            actor=request.headers.get("x-opsark-actor", "platform")[:128],
+            actor=getattr(
+                request.state,
+                "knowledge_actor",
+                request.headers.get("x-opsark-actor", "service"),
+            )[:128],
             action=action,
             target=target,
         )
@@ -118,7 +124,9 @@ async def bounds(request, call_next):
     request.state.request_id = uuid.uuid4().hex
     if request.method in {"POST", "PATCH", "PUT"}:
         limit = (
-            2 * 1024 * 1024 if request.url.path.startswith("/internal/") else 256 * 1024
+            2 * 1024 * 1024
+            if request.url.path.startswith(("/internal/", "/api/admin/"))
+            else 256 * 1024
         )
         if request.headers.get("content-encoding", "identity") != "identity":
             return await error(request, ApiError(415, "UNSUPPORTED_ENCODING"))
@@ -131,6 +139,8 @@ async def bounds(request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
     response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     return response
 
 
@@ -151,11 +161,18 @@ def openapi():
 
 
 @internal.get("/knowledge-bases")
-def bases(db=Depends(get_db)):
+def bases(
+    offset: int = Query(0, ge=0, le=1000000),
+    limit: int = Query(200, ge=1, le=200),
+    db=Depends(get_db),
+):
     return [
         data(x)
         for x in db.scalars(
-            select(KnowledgeBase).order_by(KnowledgeBase.created_at.desc()).limit(200)
+            select(KnowledgeBase)
+            .order_by(KnowledgeBase.created_at.desc(), KnowledgeBase.id)
+            .offset(offset)
+            .limit(limit)
         )
     ]
 
@@ -181,11 +198,18 @@ def update_base(ident: str, payload: BaseInput, request: Request, db=Depends(get
 
 
 @internal.get("/knowledge-keys")
-def keys(db=Depends(get_db)):
+def keys(
+    offset: int = Query(0, ge=0, le=1000000),
+    limit: int = Query(200, ge=1, le=200),
+    db=Depends(get_db),
+):
     return [
         data(x)
         for x in db.scalars(
-            select(ApiKey).order_by(ApiKey.created_at.desc()).limit(200)
+            select(ApiKey)
+            .order_by(ApiKey.created_at.desc(), ApiKey.id)
+            .offset(offset)
+            .limit(limit)
         )
     ]
 
@@ -310,8 +334,12 @@ def record_status(
     ident: str, key=Depends(require_key("records:read")), db=Depends(get_db)
 ):
     row = get(db, SourceRecord, ident)
-    if row.installation_id != key.installation_id:
+    if (
+        row.installation_id != key.installation_id
+        or row.knowledge_base_id not in key.knowledge_base_ids
+    ):
         raise ApiError(404, "RESOURCE_NOT_FOUND")
+    check_bases(db, [row.knowledge_base_id], key)
     return {
         "record_id": row.id,
         "status": row.status,
@@ -321,24 +349,36 @@ def record_status(
 
 
 @internal.get("/records")
-def records(db=Depends(get_db)):
+def records(
+    offset: int = Query(0, ge=0, le=1000000),
+    limit: int = Query(200, ge=1, le=200),
+    db=Depends(get_db),
+):
     return [
         data(x)
         for x in db.scalars(
-            select(SourceRecord).order_by(SourceRecord.created_at.desc()).limit(200)
+            select(SourceRecord)
+            .order_by(SourceRecord.created_at.desc(), SourceRecord.id)
+            .offset(offset)
+            .limit(limit)
         )
     ]
 
 
 @internal.get("/documents")
-def documents(db=Depends(get_db)):
+def documents(
+    offset: int = Query(0, ge=0, le=1000000),
+    limit: int = Query(200, ge=1, le=200),
+    db=Depends(get_db),
+):
     return [
         data(x)
         for x in db.scalars(
             select(Document)
             .where(Document.status != "deleted")
-            .order_by(Document.updated_at.desc())
-            .limit(200)
+            .order_by(Document.updated_at.desc(), Document.id)
+            .offset(offset)
+            .limit(limit)
         )
     ]
 
@@ -355,10 +395,38 @@ def create_doc(payload: DocumentInput, request: Request, db=Depends(get_db)):
     return data(row)
 
 
+@internal.post("/records/{ident}/reject")
+def reject_record(ident: str, request: Request, db=Depends(get_db)):
+    row = get(db, SourceRecord, ident)
+    if row.status not in {"received", "ready_for_review", "failed"}:
+        raise ApiError(409, "RECORD_NOT_REVIEWABLE")
+    doc = db.scalar(select(Document).where(Document.source_record_id == ident))
+    if doc and (doc.published_version is not None or doc.status == "indexing"):
+        raise ApiError(409, "SOURCE_IN_USE", "已发布或正在发布的来源不能直接拒绝")
+    row.status = "rejected"
+    if doc:
+        doc.status = "rejected"
+    targets = [ident] + ([doc.id] if doc else [])
+    db.execute(
+        update(Job)
+        .where(
+            Job.target_id.in_(targets), Job.status.in_(["pending", "running", "failed"])
+        )
+        .values(status="cancelled", lease_token=None)
+    )
+    audit(db, request, "record.reject", ident)
+    db.commit()
+    return {"record_id": row.id, "status": row.status}
+
+
 @internal.patch("/documents/{ident}/draft")
 def edit_doc(ident: str, payload: DraftInput, request: Request, db=Depends(get_db)):
     row = get(db, Document, ident)
-    if row.revision != payload.revision or row.status in {"indexing", "deleted"}:
+    if row.revision != payload.revision or row.status in {
+        "indexing",
+        "deleted",
+        "rejected",
+    }:
         raise ApiError(409, "REVISION_CONFLICT")
     check_bases(db, [payload.knowledge_base_id])
     check_sensitive(payload.model_dump())
@@ -375,7 +443,11 @@ def edit_doc(ident: str, payload: DraftInput, request: Request, db=Depends(get_d
 @internal.post("/documents/{ident}/publish", status_code=202)
 def publish(ident: str, payload: RevisionInput, request: Request, db=Depends(get_db)):
     row = get(db, Document, ident)
-    if row.revision != payload.revision or row.status in {"indexing", "deleted"}:
+    if row.revision != payload.revision or row.status in {
+        "indexing",
+        "deleted",
+        "rejected",
+    }:
         raise ApiError(409, "REVISION_CONFLICT")
     check_bases(db, [row.knowledge_base_id])
     number = (
@@ -410,6 +482,8 @@ def publish(ident: str, payload: RevisionInput, request: Request, db=Depends(get
 @internal.post("/documents/{ident}/unpublish")
 def unpublish(ident: str, request: Request, db=Depends(get_db)):
     row = get(db, Document, ident)
+    if row.status == "rejected":
+        raise ApiError(409, "RECORD_REJECTED", "拒绝的草稿不能通过下架恢复")
     row.published_version, row.status = None, "draft"
     db.execute(
         update(Job)
@@ -422,10 +496,19 @@ def unpublish(ident: str, request: Request, db=Depends(get_db)):
 
 
 @internal.get("/jobs")
-def jobs(db=Depends(get_db)):
+def jobs(
+    offset: int = Query(0, ge=0, le=1000000),
+    limit: int = Query(200, ge=1, le=200),
+    db=Depends(get_db),
+):
     return [
         data(x)
-        for x in db.scalars(select(Job).order_by(Job.created_at.desc()).limit(200))
+        for x in db.scalars(
+            select(Job)
+            .order_by(Job.created_at.desc(), Job.id)
+            .offset(offset)
+            .limit(limit)
+        )
     ]
 
 
@@ -528,6 +611,7 @@ def search_results(payload, db, key=None):
     except Exception:
         pass
     lexical, semantic = [], []
+    eligible_vectors, considered = 0, 0
     for chunk, version, doc in rows:
         if payload.filters.software_names and not set(
             payload.filters.software_names
@@ -537,6 +621,7 @@ def search_results(payload, db, key=None):
         exact_paths = re.findall(r"(?:/[A-Za-z0-9_.-]+)+", payload.query)
         if exact_paths and not all(path in original for path in exact_paths):
             continue
+        considered += 1
         corpus = original.lower()
         score = sum(len(w) for w in words if w in corpus)
         if score:
@@ -546,6 +631,7 @@ def search_results(payload, db, key=None):
             and version.index_version == index_id()
             and chunk.embedding is not None
         ):
+            eligible_vectors += 1
             v = list(chunk.embedding)
             denom = math.sqrt(sum(x * x for x in v) * sum(x * x for x in query_vector))
             cosine = sum(x * y for x, y in zip(v, query_vector)) / denom if denom else 0
@@ -583,14 +669,20 @@ def search_results(payload, db, key=None):
                 },
             }
         )
+    warnings = []
+    if query_vector is None:
+        warnings.append("未启用或无法访问 Embedding，当前使用关键词检索")
+    elif eligible_vectors == 0:
+        mode = "keyword_only"
+        warnings.append("当前候选无匹配索引配置的向量，使用关键词检索；请检查发布索引")
+    elif eligible_vectors < considered:
+        warnings.append("部分候选缺少匹配的向量索引，混合检索覆盖不完整")
     return {
         "retrieval_mode": mode,
         "index_version": index_id(),
         "hits": hits,
         "truncated": remaining <= 0,
-        "warnings": ["未启用或无法访问 Embedding，当前使用关键词检索"]
-        if mode == "keyword_only"
-        else [],
+        "warnings": warnings,
     }
 
 
@@ -629,3 +721,23 @@ def citation(
 
 
 app.include_router(internal)
+
+# Separate local management surface; no service Token is exposed to the browser.
+from .admin import router as admin_router, require_admin  # noqa: E402
+
+management = APIRouter(
+    prefix="/api/admin/v1/knowledge", dependencies=[Depends(require_admin)]
+)
+for route in internal.routes:
+    management.add_api_route(
+        route.path.removeprefix("/internal/v1"),
+        route.endpoint,
+        methods=list(route.methods),
+        status_code=route.status_code,
+        response_model=route.response_model,
+    )
+app.include_router(admin_router)
+app.include_router(management)
+web = Path(__file__).resolve().parent.parent / "web" / "dist"
+if web.is_dir():
+    app.mount("/", StaticFiles(directory=web, html=True), name="knowledge-web")
