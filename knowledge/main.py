@@ -4,14 +4,16 @@ import secrets
 import time
 import uuid
 from pathlib import Path
+
 import jieba
 from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select, update, inspect, delete
+from sqlalchemy import delete, func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
+from .config import settings
 from .db import get_db
 from .models import (
     ApiKey,
@@ -22,8 +24,10 @@ from .models import (
     Idempotency,
     Job,
     KnowledgeBase,
+    RefinementComparison,
     SourceRecord,
 )
+from .processing import embed, index_id
 from .schemas import (
     BaseInput,
     DocumentInput,
@@ -41,7 +45,6 @@ from .security import (
     require_key,
     service_auth,
 )
-from .processing import embed, index_id
 
 app = FastAPI(
     title="Opsark Knowledge",
@@ -371,16 +374,40 @@ def documents(
     limit: int = Query(200, ge=1, le=200),
     db=Depends(get_db),
 ):
-    return [
-        data(x)
-        for x in db.scalars(
-            select(Document)
-            .where(Document.status != "deleted")
-            .order_by(Document.updated_at.desc(), Document.id)
-            .offset(offset)
-            .limit(limit)
+    rows = db.execute(
+        select(Document, SourceRecord)
+        .outerjoin(SourceRecord, Document.source_record_id == SourceRecord.id)
+        .where(Document.status != "deleted")
+        .order_by(
+            SourceRecord.source_revision.desc(),
+            Document.updated_at.desc(),
+            Document.id,
         )
-    ]
+    ).all()
+    # Older versions of the worker created one document for every source revision.
+    # Present those rows as one logical document while keeping manual documents distinct.
+    logical_rows = []
+    seen = set()
+    for document, source in rows:
+        key = (
+            (source.installation_id, source.source_record_id, document.knowledge_base_id)
+            if source
+            else ("manual", document.id)
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        item = data(document)
+        if source:
+            item.update(
+                source_title=source.payload.get("title", ""),
+                source_revision=source.source_revision,
+                source_external_id=source.source_record_id,
+                source_installation_id=source.installation_id,
+            )
+        logical_rows.append(item)
+    logical_rows.sort(key=lambda item: item["updated_at"], reverse=True)
+    return logical_rows[offset : offset + limit]
 
 
 @internal.post("/documents", status_code=201)
@@ -393,6 +420,58 @@ def create_doc(payload: DocumentInput, request: Request, db=Depends(get_db)):
     audit(db, request, "document.create", row.id)
     db.commit()
     return data(row)
+
+
+@internal.get("/documents/{ident}/comparison")
+def document_comparison(ident: str, db=Depends(get_db)):
+    doc = get(db, Document, ident)
+    if doc.status in {"deleted", "rejected"}:
+        raise ApiError(404, "RESOURCE_NOT_FOUND")
+    row = db.get(RefinementComparison, ident)
+    return {"comparison": data(row) if row else None, "current_revision": doc.revision}
+
+
+@internal.post("/documents/{ident}/refine", status_code=202)
+def refine_document(
+    ident: str, payload: RevisionInput, request: Request, db=Depends(get_db)
+):
+    row = get(db, Document, ident)
+    if (
+        not settings().ai_refinement_enabled
+        or not settings().ai_model
+        or not settings().ai_api_key
+    ):
+        raise ApiError(
+            409, "AI_NOT_CONFIGURED", "请配置 Knowledge 的 AI 提炼模型并启用"
+        )
+    if (
+        row.revision != payload.revision
+        or row.status != "draft"
+        or row.published_version is not None
+    ):
+        raise ApiError(409, "AI_STALE_DRAFT", "仅支持当前未发布草稿；请刷新或先下架")
+    source = (
+        get(db, SourceRecord, row.source_record_id) if row.source_record_id else None
+    )
+    if not source or source.status in {"deleted", "rejected"}:
+        raise ApiError(409, "AI_SOURCE_UNAVAILABLE", "没有可用任务来源")
+    # Touch the versioned document so concurrent enqueue/edit requests conflict.
+    row.updated_at = time.time()
+    db.flush()
+    db.execute(
+        update(Job)
+        .where(
+            Job.target_id == ident,
+            Job.kind == "refine",
+            Job.status.in_(["pending", "running"]),
+        )
+        .values(status="cancelled", lease_token=None)
+    )
+    job = Job(kind="refine", target_id=ident, revision=row.revision)
+    db.add(job)
+    audit(db, request, "document.refine", ident)
+    db.commit()
+    return data(job)
 
 
 @internal.post("/records/{ident}/reject")
@@ -519,6 +598,9 @@ def delete_document(ident: str, request: Request, db=Depends(get_db)):
     db.execute(delete(Chunk).where(Chunk.version_id.in_(versions)))
     db.execute(delete(DocumentVersion).where(DocumentVersion.document_id == ident))
     db.execute(
+        delete(RefinementComparison).where(RefinementComparison.document_id == ident)
+    )
+    db.execute(
         update(Job)
         .where(Job.target_id == ident)
         .values(status="cancelled", lease_token=None)
@@ -555,6 +637,12 @@ def retry(ident: str, request: Request, db=Depends(get_db)):
     row = get(db, Job, ident)
     if row.status != "failed":
         raise ApiError(409, "JOB_NOT_FAILED")
+    if row.kind == "refine":
+        raise ApiError(
+            409,
+            "AI_REGENERATE_REQUIRED",
+            "请在知识文档中点击 AI 重新提炼，基于当前草稿重试",
+        )
     row.status, row.attempts, row.error = "pending", 0, None
     target = get(db, Document if row.kind == "publish" else SourceRecord, row.target_id)
     target.status = "indexing" if row.kind == "publish" else "received"

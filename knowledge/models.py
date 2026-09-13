@@ -90,6 +90,19 @@ class Document(Base):
     __mapper_args__ = {"version_id_col": revision}
 
 
+class RefinementComparison(Base):
+    __tablename__ = "refinement_comparisons"
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    before_title: Mapped[str] = mapped_column(String(200))
+    before_content: Mapped[str] = mapped_column(Text)
+    after_title: Mapped[str] = mapped_column(String(200))
+    after_content: Mapped[str] = mapped_column(Text)
+    applied_revision: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
 class DocumentVersion(Base):
     __tablename__ = "document_versions"
     __table_args__ = (UniqueConstraint("document_id", "version"),)

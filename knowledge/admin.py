@@ -111,4 +111,12 @@ def logout(response: Response, session=Depends(require_admin), db=Depends(get_db
 
 @router.get("/config")
 def config(session=Depends(require_admin)):
-    return {"knowledge_connected": True, "knowledge_base_url": "/api/v1"}
+    return {
+        "knowledge_connected": True,
+        "knowledge_base_url": "/api/v1",
+        "ai_refinement_ready": bool(
+            settings().ai_refinement_enabled
+            and settings().ai_model
+            and settings().ai_api_key
+        ),
+    }

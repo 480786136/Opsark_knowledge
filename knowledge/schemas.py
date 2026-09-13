@@ -1,4 +1,5 @@
 from typing import Annotated, Literal
+
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 
 Short = Annotated[str, StringConstraints(min_length=1, max_length=128)]
@@ -19,11 +20,15 @@ class Context(Strict):
     server_ref: str = Field(default="", max_length=128)
     environment: str = Field(default="", max_length=100)
     software: list[Software] = Field(default_factory=list, max_length=20)
+    runtime: dict[
+        Literal["os", "shell", "scope", "privilege", "visibility"],
+        Annotated[str, StringConstraints(max_length=200)],
+    ] = Field(default_factory=dict, max_length=5)
 
 
 class Evidence(Strict):
     evidence_id: Short
-    kind: Literal["command_result", "validation", "observation"]
+    kind: Literal["command_result", "validation", "observation", "expectation"]
     summary: str = Field(max_length=1000)
     excerpt: str = Field(default="", max_length=2000)
 

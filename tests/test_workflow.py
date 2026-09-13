@@ -1,12 +1,14 @@
 import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from knowledge.main import app
-from knowledge.db import Base, get_db, make_engine
+
 from knowledge.config import settings
-from knowledge.models import SourceRecord
+from knowledge.db import Base, get_db, make_engine
+from knowledge.main import app
+from knowledge.models import Document, SourceRecord
 from knowledge.processing import run_once
 from knowledge.security import _calls
 
@@ -24,6 +26,7 @@ def env(tmp_path, monkeypatch):
     app.dependency_overrides[get_db] = db
     monkeypatch.setattr(settings(), "knowledge_service_token", "s" * 40)
     monkeypatch.setattr(settings(), "embedding_base_url", "")
+    monkeypatch.setattr(settings(), "ai_refinement_enabled", False)
     _calls.clear()
     with TestClient(app) as client:
         yield client, factory, {"Authorization": "Bearer " + "s" * 40}
@@ -72,10 +75,74 @@ def record(kb):
     }
 
 
+def test_new_source_revision_updates_existing_draft_and_exposes_source_identity(env):
+    client, factory, service = env
+    kb, auth, _ = prepare(env)
+    first = record(kb)
+    assert client.post(
+        "/api/v1/records",
+        headers={**auth, "Idempotency-Key": "task-1-v1"},
+        json=first,
+    ).status_code == 202
+    assert run_once(factory)
+
+    second = record(kb)
+    second.update(source_revision=2, title="拉取项目", problem="拉取新版项目")
+    assert client.post(
+        "/api/v1/records",
+        headers={**auth, "Idempotency-Key": "task-1-v2"},
+        json=second,
+    ).status_code == 202
+    assert run_once(factory)
+
+    with factory() as db:
+        documents = list(db.scalars(select(Document)))
+        assert len(documents) == 1
+        assert documents[0].title == "拉取项目"
+        assert db.get(SourceRecord, documents[0].source_record_id).source_revision == 2
+
+    listed = client.get("/internal/v1/documents", headers=service).json()
+    assert len(listed) == 1
+    assert listed[0]["source_title"] == "拉取项目"
+    assert listed[0]["source_revision"] == 2
+    assert listed[0]["source_external_id"] == "task-1"
+    assert listed[0]["source_installation_id"] == "device-a"
+
+
 def test_upload_publish_search_and_unpublish(env):
     client, factory, service = env
     kb, auth, _ = prepare(env)
-    body = json.dumps(record(kb)).encode()
+    payload = record(kb)
+    payload["redaction"]["ruleset_version"] = "core-upload-v2"
+    payload["steps"] = [
+        {
+            "step_id": "nginx-check",
+            "description": "Nginx 配置检查\n重新加载前验证配置文件",
+            "command": "nginx -t",
+            "execution_status": "succeeded",
+            "validation_status": "passed",
+            "evidence": [
+                {
+                    "evidence_id": "main",
+                    "kind": "command_result",
+                    "summary": "退出码=0",
+                    "excerpt": "syntax is ok",
+                },
+                {
+                    "evidence_id": "verify",
+                    "kind": "validation",
+                    "summary": "独立校验通过",
+                    "excerpt": "configuration file test is successful",
+                },
+                {
+                    "evidence_id": "expected",
+                    "kind": "observation",
+                    "summary": "预期：配置检查通过",
+                },
+            ],
+        }
+    ]
+    body = json.dumps(payload).encode()
     headers = {
         **auth,
         "Idempotency-Key": "task-1-v1",
@@ -91,6 +158,9 @@ def test_upload_publish_search_and_unpublish(env):
     assert run_once(factory)
     docs = client.get("/internal/v1/documents", headers=service).json()
     assert len(docs) == 1 and docs[0]["status"] == "draft"
+    assert "configuration file test is successful" in docs[0]["content"]
+    assert "验收标准与校验证据" in docs[0]["content"]
+    assert "knowledge-draft-v2" in docs[0]["content"]
     query = {"query": "Nginx 配置", "knowledge_base_ids": [kb]}
     assert (
         client.post("/api/v1/knowledge/search", headers=auth, json=query).json()["hits"]

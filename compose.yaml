@@ -22,6 +22,10 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
       EMBEDDING_INDEX_VERSION: ${EMBEDDING_INDEX_VERSION:-default-v1}
+      AI_REFINEMENT_ENABLED: ${AI_REFINEMENT_ENABLED:-false}
+      AI_BASE_URL: ${AI_BASE_URL:-http://host.docker.internal:8001/v1}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
     command: [sh, -c, 'alembic upgrade head && exec uvicorn knowledge.main:app --host 0.0.0.0 --port 8002 --workers 1']
     depends_on:
       db: {condition: service_healthy}
