@@ -25,15 +25,31 @@ class Claim(BaseModel):
         "本次发现",
         "结论边界",
     ]
-    kind: Literal["事实", "建议", "未确认", "验收要求", "来源声明"]
+    kind: Literal["事实", "建议", "未确认", "验收要求", "来源声明"] = Field(
+        description=(
+            "事实只能由 command_result/validation/observation 支持；"
+            "expectation 必须标验收要求；context/client_report/command 只能标"
+            "来源声明；缺失、无法证明、需核对或混合来源的结论标未确认。"
+        )
+    )
     text: str = Field(min_length=1, max_length=2000)
-    refs: list[str] = Field(max_length=20)
+    refs: list[str] = Field(
+        max_length=20,
+        description="只能逐字复制 evidence 字典中已有的键，不能引用其他字段名。",
+    )
 
 
 class Experience(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=200)
     claims: list[Claim] = Field(min_length=1, max_length=40)
+
+
+def normalize_legacy_metadata_refs(experience: Experience) -> None:
+    """Remove the old non-citable warnings field from non-assertive claims."""
+    for claim in experience.claims:
+        if claim.kind in {"建议", "未确认"}:
+            claim.refs = [ref for ref in claim.refs if ref != "quality_warnings"]
 
 
 def refine(record):
@@ -78,6 +94,10 @@ def _refine(record, diagnostic):
         "不执行命令、不补造成功结果、不把模型总结或预期当实际证据。区分本次实例与通用建议，"
         "缺少信息标未确认。只返回 JSON，结构遵循给定 schema。事实必须关联至少一个证据引用；"
         "引用必须来自 evidence 字典的键，包含 step_id/evidence_id 和 record/context 等来源引用。建议不是已验证事实。"
+        "quality_warning 只能支持未确认或建议，不能支持事实、验收要求或来源声明。"
+        "逐条检查 refs 对应的 kind：事实的所有 refs 都必须是 command_result、validation 或 observation；"
+        "来源声明的所有 refs 都必须是 context、client_report 或 command；"
+        "只要结论同时依赖两类来源，或者表达缺失、无法证明、需要核对，就标为未确认，不得标事实。"
         "保留失败、限制和未知，不包含凭据。"
         "按可复用经验组织，不按执行流水复述；标题描述问题与方法，不把临时状态作为通用结论。"
         "事实只引用command_result、validation、observation；expectation只能标为验收要求。"
@@ -110,7 +130,10 @@ def _refine(record, diagnostic):
                     {
                         "role": "user",
                         "content": json.dumps(
-                            prepared,
+                            # Only expose citable items in the model input. Internal
+                            # presentation metadata such as the warnings list must not
+                            # look like an alternative reference namespace.
+                            {"evidence": prepared["evidence"]},
                             ensure_ascii=False,
                         ),
                     },
@@ -152,6 +175,10 @@ def _refine(record, diagnostic):
     diagnostic["stage"] = "sensitive_validation"
     check_sensitive(experience.model_dump())
     diagnostic["stage"] = "evidence_validation"
+    # Older prompts exposed this internal list next to the evidence catalog, so some
+    # otherwise valid outputs cited its field name. It never represented a source ID;
+    # only non-assertive claims may discard that legacy pseudo-reference.
+    normalize_legacy_metadata_refs(experience)
     validate_claims(experience.claims, prepared["evidence"])
     sections = [
         f"# {experience.title}",

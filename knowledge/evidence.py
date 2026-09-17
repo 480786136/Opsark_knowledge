@@ -69,6 +69,11 @@ def prepare_evidence(payload):
             + "、".join(missing_runtime)
             + "；已有字段仅为来源声明。"
         )
+    # Quality warnings are derived from the source record and are useful context for
+    # the model. Give them stable evidence IDs so every citable value sent to the
+    # model follows the same contract and remains auditable in the source catalog.
+    for index, warning in enumerate(warnings, start=1):
+        put(f"record/quality-warning-{index}", "quality_warning", warning)
     return {
         "problem": payload.get("problem", ""),
         "evidence": catalog,

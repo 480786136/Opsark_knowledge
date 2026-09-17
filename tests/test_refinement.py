@@ -70,6 +70,13 @@ def test_model_contract_and_references(monkeypatch, refs, valid):
         assert "max_tokens" not in body
         assert "max_completion_tokens" not in body
         assert "test-key" not in body["messages"][1]["content"]
+        model_input = json.loads(body["messages"][1]["content"])
+        assert list(model_input) == ["evidence"]
+        assert "quality_warnings" not in model_input
+        assert any(
+            item["kind"] == "quality_warning"
+            for item in model_input["evidence"].values()
+        )
         assert request.url.path == "/v1/chat/completions"
         return httpx.Response(
             200,
@@ -98,6 +105,51 @@ def test_model_contract_and_references(monkeypatch, refs, valid):
     else:
         with pytest.raises(ValueError, match="AI_INVALID_REFERENCE"):
             refine(row)
+
+
+def test_legacy_quality_warnings_ref_does_not_reject_unconfirmed_claim(monkeypatch):
+    enable(monkeypatch)
+    source = record("kb")
+    original = httpx.Client
+
+    def handle(_request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "环境边界",
+                                    "claims": [
+                                        {
+                                            "section": "结论边界",
+                                            "kind": "未确认",
+                                            "text": "环境范围未确认",
+                                            "refs": [
+                                                "record/context",
+                                                "quality_warnings",
+                                            ],
+                                        }
+                                    ],
+                                },
+                                ensure_ascii=False,
+                            )
+                        },
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "knowledge.refinement.httpx.Client",
+        lambda **kwargs: original(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    _, content = refine(SimpleNamespace(payload=source, id="rec", source_revision=1))
+    assert "依据：record/context" in content
+    assert "quality_warnings" not in content
 
 
 @pytest.mark.parametrize(

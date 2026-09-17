@@ -12,12 +12,28 @@ const documentQuery = ref(""),
   documentStatus = ref("");
 const editorDialog = ref(null);
 const baseDrawer = ref(null);
-async function loadComparison(d) {
-  comparison.value = null;
-  comparison.value = await api("knowledge/documents/" + d.id + "/comparison");
-}
 const comparison = ref(null),
+  comparisonDocumentId = ref(""),
+  comparisonLoadedRevision = ref(null),
   onlyChanges = ref(false);
+async function loadComparison(d) {
+  const documentId = d.id;
+  comparisonDocumentId.value = documentId;
+  comparison.value = null;
+  comparisonLoadedRevision.value = null;
+  const result = await api("knowledge/documents/" + documentId + "/comparison");
+  if (comparisonDocumentId.value !== documentId) return;
+  comparison.value = result;
+  comparisonLoadedRevision.value = result.current_revision;
+}
+function closeDocument(d) {
+  if (comparisonDocumentId.value === d.id) {
+    comparisonDocumentId.value = "";
+    comparison.value = null;
+    comparisonLoadedRevision.value = null;
+  }
+  if (editor.value?.id === d.id) cancelInlineEdit();
+}
 const statusNames = {
   draft: "待审核",
   published: "已发布",
@@ -177,11 +193,20 @@ async function refresh() {
   [bases.value, docs.value, records.value, keys.value, jobs.value] = result;
   if (!selectedBase.value && bases.value.length)
     selectedBase.value = bases.value[0].id;
+  const openDocument = docs.value.find(
+    (document) => document.id === comparisonDocumentId.value,
+  );
+  // A refinement completes asynchronously. If its drawer was already open, the
+  // first comparison request may have returned null; reload when the document's
+  // optimistic-lock revision changes so the finished comparison appears in place.
+  if (openDocument && openDocument.revision !== comparisonLoadedRevision.value)
+    await loadComparison(openDocument);
 }
 let refreshTimer;
 let backgroundRefreshing = false;
 async function refreshInBackground() {
-  if (!user.value || busy.value || backgroundRefreshing || document.hidden) return;
+  if (!user.value || busy.value || backgroundRefreshing || document.hidden)
+    return;
   backgroundRefreshing = true;
   try {
     await refresh();
@@ -561,7 +586,7 @@ onBeforeUnmount(() => {
             :status="statusText(d.status)"
             wide
             @open="action(() => loadComparison(d))"
-            @close="editor?.id === d.id && cancelInlineEdit()"
+            @close="closeDocument(d)"
           >
             <form
               v-if="editor?.id === d.id"

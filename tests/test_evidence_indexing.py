@@ -67,6 +67,30 @@ def test_typed_expectations_reports_and_warnings():
     )
     assert any("错误信息抑制" in x for x in prepared["quality_warnings"])
     assert any("环境字段缺失" in x for x in prepared["quality_warnings"])
+    warning_refs = {
+        ref: item
+        for ref, item in prepared["evidence"].items()
+        if item["kind"] == "quality_warning"
+    }
+    assert list(warning_refs) == [
+        "record/quality-warning-1",
+        "record/quality-warning-2",
+        "record/quality-warning-3",
+    ]
+    assert [item["value"] for item in warning_refs.values()] == prepared[
+        "quality_warnings"
+    ]
+    validate_claims(
+        [
+            Claim(
+                section="结论边界",
+                kind="未确认",
+                text="环境范围未确认",
+                refs=["record/quality-warning-2"],
+            )
+        ],
+        prepared["evidence"],
+    )
 
 
 def test_sections_and_long_lines_keep_exact_citations():
