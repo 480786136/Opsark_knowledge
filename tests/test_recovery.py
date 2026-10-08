@@ -1,5 +1,6 @@
-from test_workflow import env, prepare, record  # noqa: F401
 from sqlalchemy import select
+from test_workflow import env, prepare, record  # noqa: F401
+
 from knowledge.models import Job, SourceRecord
 from knowledge.processing import run_once
 

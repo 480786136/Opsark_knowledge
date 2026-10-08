@@ -61,7 +61,12 @@ def test_typed_expectations_reports_and_warnings():
                 text="客户端报告部分完成",
                 refs=["record/outcome"],
             ),
-            Claim(section="本次发现", kind="事实", text="无输出", refs=["s/result-1"]),
+            Claim(
+                section="本次发现",
+                kind="来源声明",
+                text="客户端报告无输出",
+                refs=["s/result-1"],
+            ),
         ],
         prepared["evidence"],
     )
@@ -73,9 +78,7 @@ def test_typed_expectations_reports_and_warnings():
         if item["kind"] == "quality_warning"
     }
     assert list(warning_refs) == [
-        "record/quality-warning-1",
-        "record/quality-warning-2",
-        "record/quality-warning-3",
+        f"record/quality-warning-{index}" for index in range(1, len(warning_refs) + 1)
     ]
     assert [item["value"] for item in warning_refs.values()] == prepared[
         "quality_warnings"
@@ -110,6 +113,59 @@ def test_partial_runtime_does_not_hide_unknown_scope():
     runtime_warning = next(x for x in warnings if "运行环境细项" in x)
     assert "scope" in runtime_warning and "shell" in runtime_warning
     assert "os" not in runtime_warning
+
+
+def test_summary_only_observation_cannot_be_promoted_to_fact_and_source_is_unchanged():
+    data = payload()
+    prepared = prepare_evidence(data)
+    item = prepared["evidence"]["s/result-1"]
+    assert item["kind"] == "client_report"
+    assert item["source_kind"] == "command_result"
+    assert data["steps"][0]["evidence"][1]["kind"] == "command_result"
+    with pytest.raises(ValueError, match="AI_EVIDENCE_TYPE_MISMATCH"):
+        validate_claims(
+            [
+                Claim(
+                    section="本次发现",
+                    kind="事实",
+                    text="没有进程",
+                    refs=["s/result-1"],
+                )
+            ],
+            prepared["evidence"],
+        )
+    assert prepared["quality_metrics"]["summary_only_count"] == 1
+    assert prepared["quality_metrics"]["observed_excerpt_count"] == 0
+    assert prepared == prepare_evidence(data)
+
+
+def test_unknown_execution_and_empty_validation_remain_unverified():
+    data = payload()
+    step = data["steps"][0]
+    step["execution_status"] = "unknown"
+    step["validation_status"] = "passed"
+    step["evidence"] = [
+        {
+            "evidence_id": "check",
+            "kind": "validation",
+            "summary": "已通过",
+            "excerpt": "  ",
+        }
+    ]
+    prepared = prepare_evidence(data)
+    assert prepared["quality_metrics"]["unknown_execution_count"] == 1
+    assert prepared["quality_metrics"]["unverified_step_count"] == 1
+    assert any(
+        "没有独立校验证据" in warning for warning in prepared["quality_warnings"]
+    )
+
+
+def test_reference_namespace_collisions_are_rejected_instead_of_overwriting():
+    data = payload()
+    data["steps"][0]["step_id"] = "record"
+    data["steps"][0]["evidence"][0]["evidence_id"] = "context"
+    with pytest.raises(ValueError, match="AI_INVALID_REFERENCE"):
+        prepare_evidence(data)
 
 
 def test_claimed_pass_with_only_expectations_has_no_independent_validation():

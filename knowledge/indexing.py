@@ -2,37 +2,65 @@
 
 import hashlib
 import json
+import re
 
-CHUNKER_VERSION = "sections-v2"
+CHUNKER_VERSION = "sections-v3"
 
 
 def chunk_content(content, limit=1800):
-    """Keep original line coordinates and section boundaries; bound long lines."""
-    rows, buffer, size, start = [], [], 0, 1
-    in_fence = False
-    fence = ""
-    for number, line in enumerate(content.splitlines(), 1):
-        heading = not in_fence and line.startswith("#")
-        if buffer and (heading or size + len(line) + 1 > limit):
-            rows.append(("\n".join(buffer), start, number - 1))
-            buffer, size = [], 0
-        if not buffer:
-            start = number
-        stripped = line.lstrip()
-        if stripped.startswith(("~~~", "```")):
-            marker = stripped[:3]
-            if not in_fence:
-                in_fence, fence = True, marker
-            elif marker == fence:
-                in_fence = False
-        if len(line) > limit:
-            for offset in range(0, len(line), limit):
-                rows.append((line[offset : offset + limit], number, number))
+    """Preserve bounded code blocks and exact original line coordinates.
+
+    Oversized blocks/lines are split without inventing fences or citation lines.
+    Each emitted body is bounded even when a single source line is enormous.
+    """
+    if limit < 1:
+        raise ValueError("CHUNK_LIMIT_INVALID")
+    lines, units, number = content.splitlines(), [], 0
+    while number < len(lines):
+        start = number
+        opening = re.match(r"^\s*(`{3,}|~{3,})", lines[number])
+        if opening:
+            marker = opening.group(1)
+            number += 1
+            while number < len(lines):
+                closed = re.fullmatch(
+                    r"\s*" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}\s*",
+                    lines[number],
+                )
+                number += 1
+                if closed:
+                    break
         else:
-            buffer.append(line)
-            size += len(line) + 1
-    if buffer:
-        rows.append(("\n".join(buffer), start, len(content.splitlines())))
+            number += 1
+        text = "\n".join(lines[start:number])
+        heading = not opening and bool(re.match(r"^#{1,6}\s", lines[start]))
+        if len(text) <= limit:
+            units.append((text, start + 1, number, heading))
+        else:
+            for index in range(start, number):
+                line = lines[index]
+                for offset in range(0, max(1, len(line)), limit):
+                    units.append(
+                        (
+                            line[offset : offset + limit],
+                            index + 1,
+                            index + 1,
+                            heading and index == start and offset == 0,
+                        )
+                    )
+    rows, buffer, first, last = [], "", 0, 0
+    for text, start, end, heading in units:
+        # Same-line fragments cannot be joined with a fabricated newline.
+        if first and (heading or start <= last or len(buffer) + len(text) + 1 > limit):
+            rows.append((buffer, first, last))
+            buffer, first = "", 0
+        if first:
+            buffer += "\n" + text
+        else:
+            buffer, first = text, start
+        last = end
+    if first:
+        rows.append((buffer, first, last))
     return [row for row in rows if row[0].strip()]
 
 
@@ -43,7 +71,7 @@ def chunk_id(version_id, ordinal, content):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def vector_entity(chunk, version, document):
+def vector_entity(chunk, version, document, build=None):
     """Export a published SQL chunk for a future vector-store upsert.
 
     Consumers must recheck SQL authorization and published_version on retrieval.
@@ -53,14 +81,39 @@ def vector_entity(chunk, version, document):
         raise ValueError("INDEX_IDENTITY_MISMATCH")
     if document.published_version != version.version:
         raise ValueError("INDEX_VERSION_NOT_PUBLISHED")
+    if getattr(document, "superseded_by", None) or getattr(
+        document, "status", "published"
+    ) in {"deleted", "rejected"}:
+        raise ValueError("INDEX_VERSION_NOT_PUBLISHED")
+    if (
+        getattr(version, "active_build_id", None)
+        and getattr(chunk, "build_id", None) != version.active_build_id
+    ):
+        raise ValueError("INDEX_BUILD_NOT_ACTIVE")
+    if getattr(version, "active_build_id", None) and (
+        build is None
+        or build.id != version.active_build_id
+        or build.version_id != version.id
+        or build.status != "ready"
+    ):
+        raise ValueError("INDEX_BUILD_REQUIRED")
     return {
         "id": chunk.id,
         "knowledge_base_id": document.knowledge_base_id,
         "document_id": document.id,
         "version_id": version.id,
         "document_version": version.version,
-        "source_record_id": document.source_record_id or "",
-        "index_version": version.index_version,
+        "source_record_id": next(
+            iter(getattr(version, "source_record_ids", [document.source_record_id])), ""
+        )
+        or "",
+        "source_record_ids": getattr(
+            version,
+            "source_record_ids",
+            [document.source_record_id] if document.source_record_id else [],
+        ),
+        "index_version": build.index_version if build else version.index_version,
+        "build_id": build.id if build else None,
         "content_hash": hashlib.sha256(chunk.content.encode()).hexdigest(),
         "line_start": chunk.line_start,
         "line_end": chunk.line_end,

@@ -1,6 +1,7 @@
 services:
   db:
-    image: pgvector/pgvector:pg17
+    image: ${KNOWLEDGE_POSTGRES_IMAGE:-pgvector/pgvector:0.8.2-pg17}
+    restart: unless-stopped
     environment:
       POSTGRES_USER: knowledge
       POSTGRES_PASSWORD: ${KNOWLEDGE_DB_PASSWORD:?set KNOWLEDGE_DB_PASSWORD}
@@ -12,6 +13,13 @@ services:
       retries: 12
   api:
     build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [knowledge-runtime:/service/data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     environment: &knowledge-env
       DATABASE_URL: postgresql+psycopg://knowledge:${KNOWLEDGE_DB_PASSWORD}@db:5432/knowledge
       KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:-}
@@ -31,14 +39,22 @@ services:
       db: {condition: service_healthy}
     ports: ['127.0.0.1:8002:8002']
     healthcheck:
-      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8002/health/live")']
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8002/health/ready")']
       interval: 5s
       retries: 12
   worker:
     build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [knowledge-runtime:/service/data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     environment: *knowledge-env
     command: [python, -m, knowledge.processing]
     depends_on:
       api: {condition: service_healthy}
 volumes:
   knowledge-db:
+  knowledge-runtime:

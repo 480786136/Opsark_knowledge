@@ -2,10 +2,38 @@
 
 import re
 
+OBSERVED_KINDS = frozenset({"command_result", "validation", "observation"})
+
+
+def evidence_kind(item):
+    """Normalize legacy expectations and summary-only claims without changing source."""
+    if (
+        item["kind"] == "expectation"
+        or re.match(r"expected(?:[-_]|$)", item["evidence_id"], re.IGNORECASE)
+        or re.search(
+            r"预期验收|(?:^|\s)预期[:：]|不是已验证事实", item.get("summary", "")
+        )
+    ):
+        return "expectation"
+    if item["kind"] in OBSERVED_KINDS and not item.get("excerpt", "").strip():
+        return "client_report"
+    return item["kind"]
+
 
 def prepare_evidence(payload):
     catalog = {}
     warnings = []
+    metrics = {
+        "step_count": len(payload.get("steps", [])),
+        "evidence_count": 0,
+        "observed_excerpt_count": 0,
+        "summary_only_count": 0,
+        "expectation_count": 0,
+        "failed_step_count": 0,
+        "unknown_execution_count": 0,
+        "unverified_step_count": 0,
+        "truncated_evidence_count": 0,
+    }
 
     def put(ref, kind, value):
         if ref in catalog:
@@ -28,22 +56,54 @@ def prepare_evidence(payload):
             },
         )
         for item in step["evidence"]:
-            kind = item["kind"]
-            # Older clients encode expectations as observations.
-            if (
-                kind == "expectation"
-                or item["evidence_id"].startswith("expected-")
-                or re.search(r"预期验收|不是已验证事实", item["summary"])
+            kind = evidence_kind(item)
+            ref = f"{ident}/{item['evidence_id']}"
+            put(ref, kind, item)
+            # Preserve the supplied kind for audit while making the citable type
+            # explicit. An empty excerpt is not proof that a command had no output.
+            catalog[ref]["source_kind"] = item["kind"]
+            metrics["evidence_count"] += 1
+            metrics["observed_excerpt_count"] += int(kind in OBSERVED_KINDS)
+            metrics["summary_only_count"] += int(kind == "client_report")
+            metrics["expectation_count"] += int(kind == "expectation")
+            if kind == "client_report":
+                warnings.append(
+                    f"{ref}: 没有原始输出摘录，仅有来源摘要；不能据此认定执行或验收事实。"
+                )
+            if re.search(
+                r"已截断|输出截断|\[.*?truncat(?:ed|ion).*?\]",
+                item.get("excerpt", ""),
+                re.IGNORECASE,
             ):
-                kind = "expectation"
-            put(f"{ident}/{item['evidence_id']}", kind, item)
+                metrics["truncated_evidence_count"] += 1
+                warnings.append(
+                    f"{ref}: 摘录含截断标记，只能核对可见片段，不能推断完整输出。"
+                )
         if step["validation_status"] == "passed" and not any(
             catalog[f"{ident}/{item['evidence_id']}"]["kind"] == "validation"
-            and (item.get("excerpt", "").strip() or item.get("summary", "").strip())
             for item in step["evidence"]
         ):
             warnings.append(
                 f"{ident}: 客户端声明校验通过，但没有独立校验证据；不能据此认定已验收。"
+            )
+        if step["execution_status"] in {"failed", "blocked"}:
+            metrics["failed_step_count"] += 1
+            warnings.append(
+                f"{ident}: 来源报告失败或被阻止；后续尝试成功不抹去本次失败记录。"
+            )
+        if step["execution_status"] in {"unknown", "not_run"}:
+            metrics["unknown_execution_count"] += 1
+            warnings.append(
+                f"{ident}: 执行状态为 {step['execution_status']}，不能推断该步骤已执行成功。"
+            )
+        if step["validation_status"] != "passed" or not any(
+            catalog[f"{ident}/{item['evidence_id']}"]["kind"] == "validation"
+            for item in step["evidence"]
+        ):
+            metrics["unverified_step_count"] += 1
+        if not step["evidence"]:
+            warnings.append(
+                f"{ident}: 来源没有证据条目；步骤描述与状态均只是客户端声明。"
             )
         if re.search(r"2\s*>\s*/dev/null|\|\|\s*(?:true|:)", step.get("command", "")):
             warnings.append(
@@ -69,15 +129,25 @@ def prepare_evidence(payload):
             + "、".join(missing_runtime)
             + "；已有字段仅为来源声明。"
         )
+    if payload.get("outcome", {}).get("status") == "succeeded" and (
+        metrics["failed_step_count"]
+        or metrics["unknown_execution_count"]
+        or not metrics["observed_excerpt_count"]
+    ):
+        warnings.append(
+            "客户端整体结果报告成功，但存在失败、未知步骤或缺少原始摘录；最终结果需逐项审核。"
+        )
     # Quality warnings are derived from the source record and are useful context for
     # the model. Give them stable evidence IDs so every citable value sent to the
     # model follows the same contract and remains auditable in the source catalog.
     for index, warning in enumerate(warnings, start=1):
         put(f"record/quality-warning-{index}", "quality_warning", warning)
+    metrics["warning_count"] = len(warnings)
     return {
         "problem": payload.get("problem", ""),
         "evidence": catalog,
         "quality_warnings": warnings,
+        "quality_metrics": metrics,
     }
 
 

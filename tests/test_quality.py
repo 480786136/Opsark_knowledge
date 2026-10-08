@@ -63,7 +63,7 @@ def test_evidence_based_draft_keeps_verification_and_provenance():
         "FETCH_OK",
         "关键执行输出",
         "来源修订：3",
-        "knowledge-draft-v2",
+        "knowledge-draft-v3",
     ]:
         assert text in content
     assert "未由知识服务重新执行验证" in content
@@ -107,3 +107,81 @@ def test_claimed_validation_without_evidence_is_flagged():
         )
     )
     assert "缺少独立校验证据" in content
+
+
+def test_runtime_full_references_and_expectation_boundaries_are_preserved():
+    record = source(
+        [
+            {
+                "step_id": "inspect",
+                "description": "核对状态",
+                "command": "inspect service",
+                "execution_status": "succeeded",
+                "validation_status": "passed",
+                "evidence": [
+                    {
+                        "evidence_id": "expected-1",
+                        "kind": "validation",
+                        "summary": "预期验收",
+                        "excerpt": "service healthy",
+                    },
+                    {
+                        "evidence_id": "result",
+                        "kind": "command_result",
+                        "summary": "客户端说检查成功",
+                        "excerpt": "",
+                    },
+                ],
+            }
+        ]
+    )
+    record.payload["context"]["runtime"] = {
+        "os": "Linux",
+        "shell": "bash",
+        "scope": "selected-host",
+    }
+    content = prepare_draft(record)
+    assert "操作系统：Linux" in content and "Shell：bash" in content
+    assert "可见范围：未提供" in content
+    assert "inspect/expected-1" in content and "inspect/result" in content
+    assert "验收要求（未验证）" in content and "来源摘要（无原始摘录）" in content
+    assert "缺少独立校验证据" in content
+
+
+def test_failure_then_recovery_keeps_both_attempts_and_truncation_boundary():
+    steps = [
+        {
+            "step_id": "failed-attempt",
+            "description": "第一次检查",
+            "execution_status": "failed",
+            "validation_status": "failed",
+            "evidence": [
+                {
+                    "evidence_id": "main",
+                    "kind": "command_result",
+                    "summary": "检查失败",
+                    "excerpt": "error from first attempt",
+                }
+            ],
+        },
+        {
+            "step_id": "recovery",
+            "description": "修复后重试",
+            "execution_status": "succeeded",
+            "validation_status": "not_run",
+            "evidence": [
+                {
+                    "evidence_id": "main",
+                    "kind": "command_result",
+                    "summary": "仅有部分输出",
+                    "excerpt": "recovered\n[输出已截断]",
+                }
+            ],
+        },
+    ]
+    content = prepare_draft(source(steps, "succeeded"))
+    assert content.index("failed-attempt/main") < content.index("recovery/main")
+    assert "error from first attempt" in content and "recovered" in content
+    assert "不能将该尝试写成成功经验" in content
+    assert "不能推断完整输出" in content
+    assert "最终结果需逐项审核" in content

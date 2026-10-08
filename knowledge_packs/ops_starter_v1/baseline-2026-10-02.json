@@ -1,0 +1,1045 @@
+{
+  "pack_id": "ops-v1",
+  "document_count": 20,
+  "query_count": 50,
+  "backend": "sqlite",
+  "providers": "disabled",
+  "scope": "isolated functional/keyword baseline; not a production SLA or real AI evaluation",
+  "rank_unit": "original chunk position, without deduplicating or reranking",
+  "answer_marker_note": "Proxy only: marker present in an expected document snippet, not a semantic correctness judgment.",
+  "checks": [
+    "drafts_invisible",
+    "repeat_import_skips_identical",
+    "manual_import_no_source_or_ai_jobs",
+    "worker_publish",
+    "top_k_and_character_budget",
+    "citation_line_provenance",
+    "unpublish_removes_search_and_citation"
+  ],
+  "metrics": {
+    "positive_queries": 42,
+    "hit_at_1": 0.9524,
+    "hit_at_5": 0.9762,
+    "mrr_at_5": 0.9583,
+    "answer_marker_hit_at_5": 0.7381,
+    "negative_queries": 8,
+    "negative_any_hit_rate": 0.5,
+    "mean_unique_documents_at_5": 1.5
+  },
+  "by_category": {
+    "diagnostic": {
+      "positive_queries": 20,
+      "hit_at_1": 0.95,
+      "hit_at_5": 1,
+      "mrr_at_5": 0.9625,
+      "answer_marker_hit_at_5": 0.7,
+      "negative_queries": 0,
+      "negative_any_hit_rate": null,
+      "mean_unique_documents_at_5": 1.3
+    },
+    "filter": {
+      "positive_queries": 1,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "mrr_at_5": 1,
+      "answer_marker_hit_at_5": 1,
+      "negative_queries": 1,
+      "negative_any_hit_rate": 0,
+      "mean_unique_documents_at_5": 0.5
+    },
+    "no_answer": {
+      "positive_queries": 0,
+      "hit_at_1": null,
+      "hit_at_5": null,
+      "mrr_at_5": null,
+      "answer_marker_hit_at_5": null,
+      "negative_queries": 6,
+      "negative_any_hit_rate": 0.6667,
+      "mean_unique_documents_at_5": 2.17
+    },
+    "paraphrase": {
+      "positive_queries": 20,
+      "hit_at_1": 0.95,
+      "hit_at_5": 0.95,
+      "mrr_at_5": 0.95,
+      "answer_marker_hit_at_5": 0.75,
+      "negative_queries": 0,
+      "negative_any_hit_rate": null,
+      "mean_unique_documents_at_5": 1.65
+    },
+    "path": {
+      "positive_queries": 1,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "mrr_at_5": 1,
+      "answer_marker_hit_at_5": 1,
+      "negative_queries": 1,
+      "negative_any_hit_rate": 0,
+      "mean_unique_documents_at_5": 1
+    }
+  },
+  "latency_ms": {
+    "p50": 6.24,
+    "p95": 7.61
+  },
+  "cases": [
+    {
+      "id": "linux-disk-1",
+      "category": "diagnostic",
+      "query": "磁盘还有空间但是写文件提示 No space left on device",
+      "expected": [
+        "linux-disk"
+      ],
+      "answer_markers": [
+        "df -i"
+      ],
+      "actual": [
+        "linux-disk",
+        "linux-disk",
+        "linux-disk",
+        "linux-disk",
+        "linux-disk"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "linux-disk-2",
+      "category": "paraphrase",
+      "query": "如何检查 Linux 磁盘 inode 使用率",
+      "expected": [
+        "linux-disk"
+      ],
+      "answer_markers": [
+        "df -i"
+      ],
+      "actual": [
+        "linux-disk",
+        "linux-disk",
+        "linux-disk",
+        "linux-disk",
+        "linux-disk"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "linux-du-1",
+      "category": "diagnostic",
+      "query": "怎么找到 /var/log 里占空间最大的目录",
+      "expected": [
+        "linux-du"
+      ],
+      "answer_markers": [
+        "du -x"
+      ],
+      "actual": [
+        "linux-du",
+        "linux-du",
+        "linux-disk"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "linux-du-2",
+      "category": "paraphrase",
+      "query": "du 与 df 的容量统计为什么不同",
+      "expected": [
+        "linux-du"
+      ],
+      "answer_markers": [
+        "du -x"
+      ],
+      "actual": [
+        "linux-du",
+        "linux-du",
+        "linux-du",
+        "linux-du",
+        "linux-du"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "systemd-failed-1",
+      "category": "diagnostic",
+      "query": "systemd 服务 failed 怎么查退出状态",
+      "expected": [
+        "systemd-failed"
+      ],
+      "answer_markers": [
+        "ExecMainStatus"
+      ],
+      "actual": [
+        "systemd-failed",
+        "systemd-failed",
+        "systemd-failed",
+        "systemd-failed",
+        "systemd-failed"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "systemd-failed-2",
+      "category": "paraphrase",
+      "query": "服务启动后马上退出应该收集哪些状态",
+      "expected": [
+        "systemd-failed"
+      ],
+      "answer_markers": [
+        "ExecMainStatus"
+      ],
+      "actual": [
+        "systemd-failed",
+        "systemd-failed",
+        "systemd-failed",
+        "systemd-failed",
+        "systemd-failed"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "journal-space-1",
+      "category": "diagnostic",
+      "query": "journalctl 日志占了多少空间",
+      "expected": [
+        "journal-space"
+      ],
+      "answer_markers": [
+        "--disk-usage",
+        "--since"
+      ],
+      "actual": [
+        "journal-space",
+        "journal-space",
+        "k8s-crashloop",
+        "k8s-crashloop",
+        "docker-logs"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "journal-space-2",
+      "category": "paraphrase",
+      "query": "怎么提取某个 systemd 服务最近十分钟的日志",
+      "expected": [
+        "journal-space"
+      ],
+      "answer_markers": [
+        "--disk-usage",
+        "--since"
+      ],
+      "actual": [
+        "journal-space",
+        "systemd-failed",
+        "systemd-failed",
+        "journal-space",
+        "journal-space"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "nginx-config-1",
+      "category": "diagnostic",
+      "query": "Nginx 重载前如何验证配置文件",
+      "expected": [
+        "nginx-config"
+      ],
+      "answer_markers": [
+        "nginx -t"
+      ],
+      "actual": [
+        "nginx-config",
+        "nginx-config",
+        "nginx-config",
+        "nginx-config",
+        "nginx-config"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "nginx-config-2",
+      "category": "paraphrase",
+      "query": "nginx -t 成功能说明上游服务正常吗",
+      "expected": [
+        "nginx-config"
+      ],
+      "answer_markers": [
+        "nginx -t"
+      ],
+      "actual": [
+        "nginx-timeout",
+        "nginx-timeout",
+        "nginx-timeout",
+        "nginx-timeout",
+        "nginx-timeout"
+      ],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "nginx-timeout-1",
+      "category": "diagnostic",
+      "query": "Nginx upstream timed out 应该检查哪里",
+      "expected": [
+        "nginx-timeout"
+      ],
+      "answer_markers": [
+        "proxy_read_timeout"
+      ],
+      "actual": [
+        "nginx-timeout",
+        "nginx-config",
+        "nginx-config",
+        "nginx-config",
+        "nginx-config"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "nginx-timeout-2",
+      "category": "paraphrase",
+      "query": "proxy_read_timeout 是整个请求的总时长吗",
+      "expected": [
+        "nginx-timeout"
+      ],
+      "answer_markers": [
+        "proxy_read_timeout"
+      ],
+      "actual": [
+        "nginx-timeout",
+        "curl-tls",
+        "nginx-timeout",
+        "k8s-service",
+        "nginx-timeout"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "docker-exit-1",
+      "category": "diagnostic",
+      "query": "Docker 容器退出码 137 是否一定是 OOM",
+      "expected": [
+        "docker-exit"
+      ],
+      "answer_markers": [
+        ".State",
+        "RestartCount"
+      ],
+      "actual": [
+        "docker-exit",
+        "docker-exit",
+        "docker-exit",
+        "docker-exit",
+        "docker-exit"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "docker-exit-2",
+      "category": "paraphrase",
+      "query": "Docker 容器反复重启如何查看状态",
+      "expected": [
+        "docker-exit"
+      ],
+      "answer_markers": [
+        ".State",
+        "RestartCount"
+      ],
+      "actual": [
+        "docker-exit",
+        "docker-exit",
+        "docker-exit",
+        "docker-exit",
+        "docker-exit"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "docker-logs-1",
+      "category": "diagnostic",
+      "query": "如何只查看 Docker 最近十分钟的 200 行日志",
+      "expected": [
+        "docker-logs"
+      ],
+      "answer_markers": [
+        "--since 10m"
+      ],
+      "actual": [
+        "docker-logs",
+        "docker-logs",
+        "docker-logs",
+        "docker-logs",
+        "docker-logs"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "docker-logs-2",
+      "category": "paraphrase",
+      "query": "docker logs 没有输出是否表示没有故障",
+      "expected": [
+        "docker-logs"
+      ],
+      "answer_markers": [
+        "--since 10m"
+      ],
+      "actual": [
+        "docker-logs",
+        "docker-logs",
+        "docker-logs",
+        "docker-logs",
+        "docker-exit"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "docker-space-1",
+      "category": "diagnostic",
+      "query": "Docker 镜像和数据卷分别占多少空间",
+      "expected": [
+        "docker-space"
+      ],
+      "answer_markers": [
+        "docker system df"
+      ],
+      "actual": [
+        "docker-space",
+        "docker-space",
+        "docker-space",
+        "docker-space",
+        "docker-space"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "docker-space-2",
+      "category": "paraphrase",
+      "query": "docker system df 可回收空间能直接删除吗",
+      "expected": [
+        "docker-space"
+      ],
+      "answer_markers": [
+        "docker system df"
+      ],
+      "actual": [
+        "docker-space",
+        "docker-space",
+        "docker-space",
+        "docker-space",
+        "journal-space"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-pending-1",
+      "category": "diagnostic",
+      "query": "Kubernetes Pod 一直 Pending 怎么定位",
+      "expected": [
+        "k8s-pending"
+      ],
+      "answer_markers": [
+        "PodScheduled",
+        "FailedScheduling"
+      ],
+      "actual": [
+        "k8s-pending",
+        "k8s-pending",
+        "k8s-pending",
+        "k8s-pending",
+        "k8s-pending"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-pending-2",
+      "category": "paraphrase",
+      "query": "FailedScheduling 提示资源不足怎么办",
+      "expected": [
+        "k8s-pending"
+      ],
+      "answer_markers": [
+        "PodScheduled",
+        "FailedScheduling"
+      ],
+      "actual": [
+        "k8s-pending",
+        "k8s-pressure",
+        "docker-exit",
+        "k8s-crashloop",
+        "systemd-failed"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-crashloop-1",
+      "category": "diagnostic",
+      "query": "Kubernetes CrashLoopBackOff 如何看上一次日志",
+      "expected": [
+        "k8s-crashloop"
+      ],
+      "answer_markers": [
+        "--previous"
+      ],
+      "actual": [
+        "k8s-crashloop",
+        "k8s-crashloop",
+        "k8s-crashloop",
+        "k8s-crashloop",
+        "k8s-crashloop"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-crashloop-2",
+      "category": "paraphrase",
+      "query": "Pod 容器反复退出但当前日志为空",
+      "expected": [
+        "k8s-crashloop"
+      ],
+      "answer_markers": [
+        "--previous"
+      ],
+      "actual": [
+        "k8s-crashloop",
+        "docker-exit",
+        "k8s-crashloop",
+        "k8s-crashloop",
+        "docker-logs"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-imagepull-1",
+      "category": "diagnostic",
+      "query": "ImagePullBackOff 应该检查镜像还是账号",
+      "expected": [
+        "k8s-imagepull"
+      ],
+      "answer_markers": [
+        "imagePullSecrets"
+      ],
+      "actual": [
+        "k8s-imagepull",
+        "k8s-imagepull",
+        "k8s-imagepull",
+        "k8s-imagepull",
+        "k8s-imagepull"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-imagepull-2",
+      "category": "paraphrase",
+      "query": "Kubernetes 私有仓库镜像拉取失败怎么查",
+      "expected": [
+        "k8s-imagepull"
+      ],
+      "answer_markers": [
+        "imagePullSecrets"
+      ],
+      "actual": [
+        "k8s-imagepull",
+        "k8s-imagepull",
+        "k8s-imagepull",
+        "k8s-imagepull",
+        "k8s-imagepull"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-service-1",
+      "category": "diagnostic",
+      "query": "Kubernetes Service 没有 endpoints 怎么排查",
+      "expected": [
+        "k8s-service"
+      ],
+      "answer_markers": [
+        "targetPort",
+        "endpointslices"
+      ],
+      "actual": [
+        "k8s-service",
+        "k8s-service",
+        "k8s-service",
+        "k8s-service",
+        "k8s-service"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-service-2",
+      "category": "paraphrase",
+      "query": "Service targetPort 与容器端口应该怎么对应",
+      "expected": [
+        "k8s-service"
+      ],
+      "answer_markers": [
+        "targetPort",
+        "endpointslices"
+      ],
+      "actual": [
+        "k8s-service",
+        "k8s-service",
+        "k8s-service",
+        "k8s-service",
+        "k8s-service"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-pressure-1",
+      "category": "diagnostic",
+      "query": "Kubernetes 节点 DiskPressure 是磁盘满了吗",
+      "expected": [
+        "k8s-pressure"
+      ],
+      "answer_markers": [
+        "DiskPressure"
+      ],
+      "actual": [
+        "k8s-pressure",
+        "k8s-pressure",
+        "k8s-pressure",
+        "k8s-pressure",
+        "k8s-pressure"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "k8s-pressure-2",
+      "category": "paraphrase",
+      "query": "节点 inode 用尽导致 Pod 驱逐怎么检查",
+      "expected": [
+        "k8s-pressure"
+      ],
+      "answer_markers": [
+        "DiskPressure"
+      ],
+      "actual": [
+        "k8s-pressure",
+        "k8s-pressure",
+        "k8s-pressure",
+        "k8s-pressure",
+        "k8s-pressure"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "pg-sessions-1",
+      "category": "diagnostic",
+      "query": "PostgreSQL 连接很多如何查看等待状态",
+      "expected": [
+        "pg-sessions"
+      ],
+      "answer_markers": [
+        "pg_stat_activity"
+      ],
+      "actual": [
+        "pg-locks",
+        "pg-locks",
+        "pg-locks",
+        "pg-sessions",
+        "pg-sessions"
+      ],
+      "rank": 4,
+      "answer_marker_found": false
+    },
+    {
+      "id": "pg-sessions-2",
+      "category": "paraphrase",
+      "query": "PostgreSQL idle in transaction 怎么观察",
+      "expected": [
+        "pg-sessions"
+      ],
+      "answer_markers": [
+        "pg_stat_activity"
+      ],
+      "actual": [
+        "pg-sessions",
+        "pg-sessions",
+        "pg-sessions",
+        "pg-sessions",
+        "pg-locks"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "pg-locks-1",
+      "category": "diagnostic",
+      "query": "PostgreSQL 怎么找出是谁阻塞了查询",
+      "expected": [
+        "pg-locks"
+      ],
+      "answer_markers": [
+        "pg_blocking_pids"
+      ],
+      "actual": [
+        "pg-locks",
+        "pg-locks",
+        "pg-locks",
+        "pg-sessions",
+        "pg-sessions"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "pg-locks-2",
+      "category": "paraphrase",
+      "query": "数据库锁等待如何查 blocking pid",
+      "expected": [
+        "pg-locks"
+      ],
+      "answer_markers": [
+        "pg_blocking_pids"
+      ],
+      "actual": [
+        "pg-locks",
+        "pg-locks",
+        "pg-locks",
+        "pg-locks",
+        "python-venv"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "redis-memory-1",
+      "category": "diagnostic",
+      "query": "Redis noeviction 达到内存上限会怎样",
+      "expected": [
+        "redis-memory"
+      ],
+      "answer_markers": [
+        "CONFIG GET maxmemory"
+      ],
+      "actual": [
+        "redis-memory",
+        "redis-memory",
+        "redis-memory",
+        "redis-memory",
+        "redis-memory"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "redis-memory-2",
+      "category": "paraphrase",
+      "query": "Redis 写入报 OOM 如何检查内存和淘汰策略",
+      "expected": [
+        "redis-memory"
+      ],
+      "answer_markers": [
+        "CONFIG GET maxmemory"
+      ],
+      "actual": [
+        "redis-memory",
+        "redis-memory",
+        "redis-memory",
+        "redis-memory",
+        "redis-memory"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "tls-expiry-1",
+      "category": "diagnostic",
+      "query": "如何检查证书是否会在 24 小时内过期",
+      "expected": [
+        "tls-expiry"
+      ],
+      "answer_markers": [
+        "-checkend 86400"
+      ],
+      "actual": [
+        "tls-expiry",
+        "tls-expiry",
+        "tls-expiry",
+        "tls-expiry",
+        "tls-expiry"
+      ],
+      "rank": 1,
+      "answer_marker_found": false
+    },
+    {
+      "id": "tls-expiry-2",
+      "category": "paraphrase",
+      "query": "openssl x509 检查到期时间能证明 HTTPS 正常吗",
+      "expected": [
+        "tls-expiry"
+      ],
+      "answer_markers": [
+        "-checkend 86400"
+      ],
+      "actual": [
+        "tls-expiry",
+        "tls-expiry",
+        "tls-expiry",
+        "tls-expiry",
+        "tls-expiry"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "curl-tls-1",
+      "category": "diagnostic",
+      "query": "curl certificate verify failed 怎么排查",
+      "expected": [
+        "curl-tls"
+      ],
+      "answer_markers": [
+        "--insecure"
+      ],
+      "actual": [
+        "curl-tls",
+        "curl-tls",
+        "curl-tls",
+        "curl-tls",
+        "curl-tls"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "curl-tls-2",
+      "category": "paraphrase",
+      "query": "curl 加 -k 能作为生产证书错误的修复吗",
+      "expected": [
+        "curl-tls"
+      ],
+      "answer_markers": [
+        "--insecure"
+      ],
+      "actual": [
+        "curl-tls",
+        "curl-tls",
+        "curl-tls",
+        "curl-tls",
+        "curl-tls"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "python-venv-1",
+      "category": "diagnostic",
+      "query": "macOS .venv/Scripts/python 提示 no such file or directory",
+      "expected": [
+        "python-venv"
+      ],
+      "answer_markers": [
+        ".venv/bin/python"
+      ],
+      "actual": [
+        "python-venv",
+        "python-venv"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "python-venv-2",
+      "category": "paraphrase",
+      "query": "虚拟环境的 python 和 pip 是否属于同一个环境",
+      "expected": [
+        "python-venv"
+      ],
+      "answer_markers": [
+        ".venv/bin/python"
+      ],
+      "actual": [
+        "python-venv",
+        "python-venv",
+        "python-venv",
+        "python-venv",
+        "python-venv"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "no-answer-mysql",
+      "category": "no_answer",
+      "query": "MySQL 主从复制延迟如何修复",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [
+        "nginx-timeout",
+        "redis-memory",
+        "systemd-failed",
+        "python-venv",
+        "curl-tls"
+      ],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "no-answer-kafka",
+      "category": "no_answer",
+      "query": "Kafka 消费组积压如何排查",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [
+        "curl-tls",
+        "linux-disk",
+        "nginx-timeout",
+        "k8s-service",
+        "linux-disk"
+      ],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "no-answer-oracle",
+      "category": "no_answer",
+      "query": "Oracle ORA-01555 是怎么回事",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "no-answer-es",
+      "category": "no_answer",
+      "query": "Elasticsearch 集群分片分配失败如何修复",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [
+        "systemd-failed",
+        "systemd-failed",
+        "curl-tls",
+        "k8s-imagepull",
+        "k8s-imagepull"
+      ],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "no-answer-prometheus",
+      "category": "no_answer",
+      "query": "Prometheus 配置告警规则需要什么步骤",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [
+        "nginx-config",
+        "nginx-config",
+        "nginx-config",
+        "nginx-config",
+        "nginx-config"
+      ],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "no-answer-unknown",
+      "category": "no_answer",
+      "query": "zzqv9876nonexistent",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "path-disk",
+      "category": "path",
+      "query": "/var/log 磁盘空间",
+      "expected": [
+        "linux-disk",
+        "linux-du"
+      ],
+      "answer_markers": [
+        "df -",
+        "du -"
+      ],
+      "actual": [
+        "linux-disk",
+        "linux-du",
+        "linux-du"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "path-other",
+      "category": "path",
+      "query": "/srv/private-absent/config.toml Nginx 配置",
+      "expected": [],
+      "answer_markers": [],
+      "actual": [],
+      "rank": null,
+      "answer_marker_found": false
+    },
+    {
+      "id": "filter-pg",
+      "category": "filter",
+      "query": "阻塞等待",
+      "filters": {
+        "software_names": [
+          "PostgreSQL"
+        ]
+      },
+      "expected": [
+        "pg-locks"
+      ],
+      "answer_markers": [
+        "pg_blocking_pids"
+      ],
+      "actual": [
+        "pg-locks",
+        "pg-locks",
+        "pg-locks",
+        "pg-locks",
+        "pg-locks"
+      ],
+      "rank": 1,
+      "answer_marker_found": true
+    },
+    {
+      "id": "filter-other",
+      "category": "filter",
+      "query": "nginx 配置",
+      "filters": {
+        "software_names": [
+          "MySQL"
+        ]
+      },
+      "expected": [],
+      "answer_markers": [],
+      "actual": [],
+      "rank": null,
+      "answer_marker_found": false
+    }
+  ],
+  "measured_at": "2026-10-02"
+}

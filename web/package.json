@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5175",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "playwright test",
+    "test:live": "playwright test --config playwright.live.config.js",
+    "test:ui": "playwright test --ui"
   },
   "dependencies": {
     "vue": "3.5.42"

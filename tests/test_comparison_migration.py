@@ -3,7 +3,6 @@ from alembic.config import Config
 from sqlalchemy import inspect, text
 
 from knowledge import db
-from knowledge.models import RefinementComparison
 
 
 def test_comparison_migration_preserves_existing_data(tmp_path, monkeypatch):
@@ -11,8 +10,8 @@ def test_comparison_migration_preserves_existing_data(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "engine", engine)
     config = Config("alembic.ini")
     command.upgrade(config, "knowledge_0002")
-    # Initial migration imports current metadata; emulate an older deployed schema.
-    RefinementComparison.__table__.drop(engine)
+    # Frozen historical migrations must not create future tables.
+    assert "refinement_comparisons" not in inspect(engine).get_table_names()
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE preservation_check (value TEXT)"))
         connection.execute(text("INSERT INTO preservation_check VALUES ('keep')"))

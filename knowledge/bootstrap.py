@@ -1,8 +1,10 @@
 """Initialize a local administrator interactively; never print credentials."""
 
 import getpass
+
 from argon2 import PasswordHasher
 from sqlalchemy import select
+
 from .db import SessionLocal
 from .models import KnowledgeAdmin as Admin
 

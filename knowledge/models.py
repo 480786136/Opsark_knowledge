@@ -1,19 +1,20 @@
 import time
 import uuid
+
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    JSON,
     Boolean,
     Float,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
-from pgvector.sqlalchemy import Vector
+
 from .db import Base
-from .config import settings
 
 
 def new_id():
@@ -76,11 +77,15 @@ class Document(Base):
     source_record_id: Mapped[str | None] = mapped_column(
         ForeignKey("source_records.id"), unique=True
     )
+    logical_source_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    superseded_by: Mapped[str | None] = mapped_column(String(64), index=True)
+    draft_edited: Mapped[bool] = mapped_column(Boolean, default=False)
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     environment: Mapped[str] = mapped_column(String(100), default="")
     software_names: Mapped[list] = mapped_column(JSON, default=list)
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     published_version: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="draft")
@@ -88,6 +93,14 @@ class Document(Base):
         Float, default=time.time, onupdate=time.time
     )
     __mapper_args__ = {"version_id_col": revision}
+
+
+class DocumentSource(Base):
+    __tablename__ = "document_sources"
+    source_record_id: Mapped[str] = mapped_column(
+        ForeignKey("source_records.id"), primary_key=True
+    )
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
 
 
 class RefinementComparison(Base):
@@ -115,7 +128,25 @@ class DocumentVersion(Base):
     environment: Mapped[str] = mapped_column(String(100))
     software_names: Mapped[list] = mapped_column(JSON)
     index_version: Mapped[str] = mapped_column(String(200))
+    source_record_ids: Mapped[list] = mapped_column(JSON, default=list)
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+    reviewed_by: Mapped[str] = mapped_column(String(128), default="")
+    active_build_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class IndexBuild(Base):
+    __tablename__ = "index_builds"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("document_versions.id"), index=True
+    )
+    index_version: Mapped[str] = mapped_column(String(200))
+    config_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    finished_at: Mapped[float | None] = mapped_column(Float)
 
 
 class Chunk(Base):
@@ -124,11 +155,15 @@ class Chunk(Base):
     version_id: Mapped[str] = mapped_column(
         ForeignKey("document_versions.id"), index=True
     )
+    build_id: Mapped[str | None] = mapped_column(
+        ForeignKey("index_builds.id"), index=True
+    )
     content: Mapped[str] = mapped_column(Text)
+    search_text: Mapped[str] = mapped_column(Text, default="")
     line_start: Mapped[int] = mapped_column(Integer)
     line_end: Mapped[int] = mapped_column(Integer)
     embedding: Mapped[list | None] = mapped_column(
-        JSON().with_variant(Vector(settings().embedding_dimensions), "postgresql"),
+        JSON().with_variant(Vector(), "postgresql"),
         nullable=True,
     )
 
@@ -139,12 +174,22 @@ class Job(Base):
     kind: Mapped[str] = mapped_column(String(30))
     target_id: Mapped[str] = mapped_column(String(64))
     revision: Mapped[int | None] = mapped_column(Integer)
+    document_revision: Mapped[int | None] = mapped_column(Integer)
+    index_build_id: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(30), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     lease_until: Mapped[float] = mapped_column(Float, default=0)
     lease_token: Mapped[str | None] = mapped_column(String(64))
     error: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    available_at: Mapped[float] = mapped_column(Float, default=0, index=True)
+    finished_at: Mapped[float | None] = mapped_column(Float)
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_seen: Mapped[float] = mapped_column(Float)
 
 
 class Audit(Base):

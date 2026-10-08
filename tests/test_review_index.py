@@ -1,8 +1,10 @@
 import pytest
-from sqlalchemy import select, func
-from knowledge.models import Chunk, Document, Job
+from sqlalchemy import func, select
+from test_workflow import env as source_env
+from test_workflow import prepare, record
+
 from knowledge import processing
-from test_workflow import env as source_env, prepare, record
+from knowledge.models import Chunk, Document, Job
 
 env = source_env
 

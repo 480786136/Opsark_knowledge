@@ -1,7 +1,7 @@
 """Add local administration without modifying knowledge records."""
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "knowledge_0002"
 down_revision = "knowledge_0001"

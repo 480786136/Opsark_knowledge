@@ -6,34 +6,47 @@ import {
   onMounted,
   onBeforeUnmount,
   nextTick,
+  watch,
 } from "vue";
 import WorkDrawer from "./WorkDrawer.vue";
+import DocumentDetails from "./DocumentDetails.vue";
+import SourceDetails from "./SourceDetails.vue";
+import SourceEvidence from "./SourceEvidence.vue";
+import VersionPreview from "./VersionPreview.vue";
+import OverviewPanel from "./OverviewPanel.vue";
 const documentQuery = ref(""),
   documentStatus = ref("");
+const documentBase = ref("");
+const overview = ref(null);
+const selections = ref({});
+const batchDialog = ref(null),
+  batchSnapshot = ref([]),
+  batchReviewed = ref(false),
+  batchResult = ref(null);
+const sourceNames = {
+  core_record: "Core 任务记录",
+  reference_pack: "参考知识包",
+  manual: "手工创建 / 文件导入",
+};
+const baseName = (id) => bases.value.find((base) => base.id === id)?.name || id;
+const ownership = (doc) => ({
+  base: doc.knowledge_base_name || baseName(doc.knowledge_base_id),
+  source:
+    sourceNames[doc.source_kind] ||
+    (doc.source_record_id ? "Core 任务记录" : "手工创建 / 文件导入"),
+  creator: doc.created_by || "历史记录未留存",
+});
 const editorDialog = ref(null);
 const baseDrawer = ref(null);
-const comparison = ref(null),
-  comparisonDocumentId = ref(""),
-  comparisonLoadedRevision = ref(null),
-  onlyChanges = ref(false);
-async function loadComparison(d) {
-  const documentId = d.id;
-  comparisonDocumentId.value = documentId;
-  comparison.value = null;
-  comparisonLoadedRevision.value = null;
-  const result = await api("knowledge/documents/" + documentId + "/comparison");
-  if (comparisonDocumentId.value !== documentId) return;
-  comparison.value = result;
-  comparisonLoadedRevision.value = result.current_revision;
-}
-function closeDocument(d) {
-  if (comparisonDocumentId.value === d.id) {
-    comparisonDocumentId.value = "";
-    comparison.value = null;
-    comparisonLoadedRevision.value = null;
-  }
-  if (editor.value?.id === d.id) cancelInlineEdit();
-}
+const activeDocumentId = ref(""),
+  activeRecordId = ref("");
+const documentDrawers = new Map(),
+  recordDrawers = new Map();
+const documentPanels = new Map();
+const citationDialog = ref(null),
+  citationVersion = ref(null),
+  citationHit = ref(null);
+const citationSources = ref([]);
 const statusNames = {
   draft: "待审核",
   published: "已发布",
@@ -47,52 +60,15 @@ const statusNames = {
   failed: "失败",
   cancelled: "已取消",
   rejected: "已拒绝",
+  superseded: "已被新修订替代",
+  deleted: "已删除",
 };
 const statusText = (value) => statusNames[value] || value;
-const refinementErrors = {
-  AI_INCOMPLETE_OUTPUT:
-    "模型输出不完整（可能达到 Token 上限），请查看 Admin 调用详情中的结束原因。",
-  AI_SCHEMA_INVALID: "模型输出未通过 JSON 结构校验。",
-  AI_RESPONSE_INVALID: "模型响应格式无效。",
-  AI_INVALID_REFERENCE: "模型引用了不存在的证据，或事实缺少引用。",
-  AI_EVIDENCE_TYPE_MISMATCH:
-    "结论与证据类型不匹配：预期标准或客户端声明不能作为已验证事实。原草稿保留，请重新提炼或人工整理。",
-  AI_TIMEOUT: "模型请求超时。",
-  AI_HTTP_ERROR: "模型接口返回失败状态，请查看关联调用。",
-  AI_CONNECTION_ERROR: "无法连接模型接口。",
-  AI_DATABASE_ERROR: "保存结果失败，请检查数据库迁移及 Worker 日志。",
-  AI_SENSITIVE_CONTENT: "输入或输出触发敏感信息检查。",
-  AI_REFINEMENT_FAILED:
-    "请使用任务 ID 检索 Worker 日志；旧任务未记录详细原因。",
-};
-const refineJob = (d) =>
-  jobs.value.find((j) => j.kind === "refine" && j.target_id === d.id);
-const refinementError = (value) =>
-  refinementErrors[value?.split(":")[0]] || value;
-const comparedLines = computed(() => {
-  const before = (comparison.value?.comparison?.before_content || "").split(
-    "\n",
-  );
-  const after = (comparison.value?.comparison?.after_content || "").split("\n");
-  const left = new Set(before),
-    right = new Set(after);
-  return {
-    before: before.map((text, i) => ({
-      text,
-      number: i + 1,
-      changed: !right.has(text),
-    })),
-    after: after.map((text, i) => ({
-      text,
-      number: i + 1,
-      changed: !left.has(text),
-    })),
-  };
-});
 const user = ref(null),
   csrf = ref(""),
   busy = ref(false),
   error = ref(""),
+  syncWarning = ref(""),
   tab = ref("overview");
 const config = ref({}),
   bases = ref([]),
@@ -137,11 +113,77 @@ const pageRows = computed(
       jobs: jobs.value,
     })[pageResource.value] || [],
 );
+const selectedDocuments = computed(() => Object.values(selections.value));
+const eligibleDocs = computed(() =>
+  visibleDocs.value.filter(
+    (doc) => doc.status === "draft" && doc.knowledge_base_enabled !== false,
+  ),
+);
+const allVisibleSelected = computed(
+  () =>
+    eligibleDocs.value.length > 0 &&
+    eligibleDocs.value.slice(0, 100).every((doc) => selections.value[doc.id]),
+);
+function toggleSelection(doc, checked) {
+  if (checked && selectedDocuments.value.length < 100)
+    selections.value = { ...selections.value, [doc.id]: { ...doc } };
+  else if (!checked) {
+    const next = { ...selections.value };
+    delete next[doc.id];
+    selections.value = next;
+  }
+}
+function selectVisible(event) {
+  for (const doc of eligibleDocs.value)
+    toggleSelection(doc, event.target.checked);
+}
+async function showDocuments(baseId = "", status = "") {
+  documentBase.value = baseId;
+  documentStatus.value = status;
+  documentQuery.value = "";
+  selections.value = {};
+  batchResult.value = null;
+  offsets.documents = 0;
+  tab.value = "documents";
+  await refresh();
+}
+async function beginBatch() {
+  batchSnapshot.value = selectedDocuments.value.map((doc) => ({ ...doc }));
+  batchReviewed.value = false;
+  batchResult.value = null;
+  await nextTick();
+  batchDialog.value?.showModal();
+}
+async function submitBatch() {
+  if (!batchReviewed.value || !batchSnapshot.value.length) return;
+  const result = await api("knowledge/documents/batch-publish", "POST", {
+    documents: batchSnapshot.value.map((doc) => ({
+      document_id: doc.id,
+      revision: doc.revision,
+    })),
+  });
+  batchResult.value = {
+    ...result,
+    titles: Object.fromEntries(
+      batchSnapshot.value.map((doc) => [doc.id, doc.title]),
+    ),
+  };
+  selections.value = {};
+  batchDialog.value?.close();
+  await refresh();
+}
 async function changePage(delta) {
   const p = pageResource.value;
   if (!p) return;
+  const previous = offsets[p];
   offsets[p] = Math.max(0, offsets[p] + delta * 200);
-  await refresh();
+  try {
+    await refresh();
+    selections.value = {};
+  } catch (e) {
+    offsets[p] = previous;
+    throw e;
+  }
 }
 const login = reactive({ username: "admin", password: "" }),
   base = reactive({ name: "", description: "" });
@@ -156,20 +198,72 @@ const freshKey = ref(""),
   editor = ref(null),
   query = ref(""),
   selectedBase = ref(""),
-  searchMode = ref("");
-async function api(path, method = "GET", body) {
-  const response = await fetch("/api/admin/v1/" + path, {
-    method,
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.value },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const result = await response.json();
-  if (!response.ok) {
-    if (response.status === 401 && path !== "session") user.value = null;
-    throw new Error(result.error?.message || result.error?.code || "请求失败");
+  searchMode = ref(""),
+  searchWarnings = ref([]),
+  searchTruncated = ref(false),
+  hasSearched = ref(false),
+  searchEmbedding = ref(""),
+  searchCorpus = ref(null);
+const selectedBaseSummary = computed(() =>
+  overview.value?.bases?.find((base) => base.id === selectedBase.value),
+);
+const selectedSearchCorpus = computed(
+  () => selectedBaseSummary.value || searchCorpus.value,
+);
+const emptySearchMessage = computed(() => {
+  const corpus = selectedSearchCorpus.value;
+  if (corpus && corpus.searchable === 0) {
+    if (corpus.indexing)
+      return "该库的发布索引仍在构建。请稍后刷新，索引成功后即可检索。";
+    if (corpus.drafts)
+      return `该库有 ${corpus.drafts} 篇待审核草稿，目前没有可检索知识。请先审核并发布。`;
+    return "该库目前没有可检索知识。请先添加文档并完成发布。";
   }
-  return result;
+  return "没有匹配的已发布知识。请尝试正文中的问题、命令或错误码；知识库名称本身不一定出现在文档中。";
+});
+watch([query, selectedBase], () => {
+  hits.value = [];
+  hasSearched.value = false;
+  searchMode.value = "";
+  searchWarnings.value = [];
+  searchCorpus.value = null;
+  searchEmbedding.value = "";
+  searchTruncated.value = false;
+});
+watch([documentQuery, documentStatus], () => {
+  selections.value = {};
+});
+async function api(path, method = "GET", body) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch("/api/admin/v1/" + path, {
+      method,
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf.value,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401 && path !== "session") user.value = null;
+      throw new Error(
+        result.error?.message || result.error?.code || "请求失败，请稍后重试",
+      );
+    }
+    return result;
+  } catch (e) {
+    if (e.name === "AbortError")
+      throw new Error("请求超时。请刷新确认操作结果后再重试。");
+    if (e instanceof TypeError)
+      throw new Error("暂时无法连接知识服务，请检查连接后重试。");
+    throw e;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 async function action(fn) {
   busy.value = true;
@@ -182,25 +276,55 @@ async function action(fn) {
     busy.value = false;
   }
 }
+let refreshSequence = 0;
 async function refresh() {
-  config.value = await api("config");
-  if (!config.value.knowledge_connected) return;
-  const result = await Promise.all(
-    ["knowledge-bases", "documents", "records", "knowledge-keys", "jobs"].map(
-      (p) => api("knowledge/" + p + "?offset=" + offsets[p] + "&limit=200"),
-    ),
-  );
-  [bases.value, docs.value, records.value, keys.value, jobs.value] = result;
-  if (!selectedBase.value && bases.value.length)
-    selectedBase.value = bases.value[0].id;
-  const openDocument = docs.value.find(
-    (document) => document.id === comparisonDocumentId.value,
-  );
-  // A refinement completes asynchronously. If its drawer was already open, the
-  // first comparison request may have returned null; reload when the document's
-  // optimistic-lock revision changes so the finished comparison appears in place.
-  if (openDocument && openDocument.revision !== comparisonLoadedRevision.value)
-    await loadComparison(openDocument);
+  const sequence = ++refreshSequence;
+  const requestedOffsets = { ...offsets },
+    requestedBase = documentBase.value;
+  try {
+    const nextConfig = await api("config");
+    if (sequence !== refreshSequence) return;
+    if (!nextConfig.knowledge_connected) {
+      config.value = nextConfig;
+      return;
+    }
+    const [result, nextOverview] = await Promise.all([
+      Promise.all(
+        [
+          "knowledge-bases",
+          "documents",
+          "records",
+          "knowledge-keys",
+          "jobs",
+        ].map((p) =>
+          api(
+            "knowledge/" +
+              p +
+              "?offset=" +
+              requestedOffsets[p] +
+              "&limit=200" +
+              (p === "documents" && requestedBase
+                ? "&knowledge_base_id=" + encodeURIComponent(requestedBase)
+                : ""),
+          ),
+        ),
+      ),
+      api(
+        "knowledge/overview?offset=" +
+          requestedOffsets["knowledge-bases"] +
+          "&limit=200",
+      ),
+    ]);
+    if (sequence !== refreshSequence) return;
+    config.value = nextConfig;
+    [bases.value, docs.value, records.value, keys.value, jobs.value] = result;
+    overview.value = nextOverview;
+    if (!selectedBase.value && bases.value.length)
+      selectedBase.value = bases.value.find((base) => base.enabled)?.id || "";
+    syncWarning.value = "";
+  } catch (error) {
+    if (sequence === refreshSequence) throw error;
+  }
 }
 let refreshTimer;
 let backgroundRefreshing = false;
@@ -211,7 +335,8 @@ async function refreshInBackground() {
   try {
     await refresh();
   } catch {
-    // Keep the current page usable; explicit actions still surface API errors.
+    syncWarning.value =
+      "自动刷新暂时失败，当前显示的是上次加载的数据。请刷新数据后再操作。";
   } finally {
     backgroundRefreshing = false;
   }
@@ -225,6 +350,7 @@ async function signIn() {
 }
 async function signOut() {
   await api("session", "DELETE");
+  refreshSequence++;
   user.value = null;
   freshKey.value = "";
   csrf.value = "";
@@ -233,17 +359,36 @@ async function signOut() {
   keys.value = [];
   hits.value = [];
   editor.value = null;
+  activeDocumentId.value = "";
+  activeRecordId.value = "";
+  citationVersion.value = null;
+  citationSources.value = [];
+  searchWarnings.value = [];
+  syncWarning.value = "";
+  searchTruncated.value = false;
+  hasSearched.value = false;
+  selections.value = {};
+  overview.value = null;
+  batchResult.value = null;
+  searchCorpus.value = null;
+  searchEmbedding.value = "";
+  searchMode.value = "";
+  selectedBase.value = "";
+  documentBase.value = "";
+  bases.value = [];
+  jobs.value = [];
 }
 async function edit(doc) {
   editor.value = doc
     ? { ...doc }
     : {
-        knowledge_base_id: selectedBase.value,
+        knowledge_base_id: documentBase.value || selectedBase.value,
         title: "",
         content: "",
         tags: [],
         environment: "",
         software_names: [],
+        context: {},
       };
   tab.value = "documents";
   await nextTick();
@@ -251,12 +396,6 @@ async function edit(doc) {
   document
     .querySelector("#document-editor input")
     ?.focus({ preventScroll: true });
-}
-function editInline(doc) {
-  editor.value = { ...doc };
-}
-function cancelInlineEdit() {
-  editor.value = null;
 }
 async function save() {
   const d = editor.value,
@@ -269,6 +408,7 @@ async function save() {
         "tags",
         "environment",
         "software_names",
+        "context",
       ].map((k) => [k, d[k]]),
     );
   if (d.id) body.revision = d.revision;
@@ -281,34 +421,63 @@ async function save() {
   editor.value = null;
   await refresh();
 }
-async function publish(d) {
-  await api("knowledge/documents/" + d.id + "/publish", "POST", {
-    revision: d.revision,
-  });
-  await refresh();
-}
-async function refine(d) {
-  if (
-    !confirm(
-      "将把脱敏来源发送到配置的模型，提炼结果会替换当前草稿；发布仍需审核。是否继续？",
-    )
-  )
-    return;
-  await api("knowledge/documents/" + d.id + "/refine", "POST", {
-    revision: d.revision,
-  });
-  editor.value = null;
-  await refresh();
-}
 async function search() {
+  hits.value = [];
+  searchWarnings.value = [];
+  searchMode.value = "";
+  searchTruncated.value = false;
+  hasSearched.value = false;
+  const requestedQuery = query.value.trim(),
+    requestedBase = selectedBase.value;
   const r = await api("knowledge/search", "POST", {
-    query: query.value,
-    knowledge_base_ids: [selectedBase.value],
+    query: requestedQuery,
+    knowledge_base_ids: [requestedBase],
     top_k: 5,
     max_content_chars: 6000,
   });
+  if (
+    requestedQuery !== query.value.trim() ||
+    requestedBase !== selectedBase.value
+  )
+    return;
   hits.value = r.hits;
   searchMode.value = r.retrieval_mode;
+  searchWarnings.value = r.warnings || [];
+  searchTruncated.value = Boolean(r.truncated);
+  searchEmbedding.value = r.embedding_status || "";
+  searchCorpus.value = r.corpus || null;
+  if (selectedBaseSummary.value && r.corpus)
+    Object.assign(selectedBaseSummary.value, r.corpus);
+  hasSearched.value = true;
+}
+async function openCitation(hit) {
+  citationVersion.value = null;
+  citationSources.value = [];
+  citationHit.value = hit;
+  await nextTick();
+  citationDialog.value.showModal();
+  citationVersion.value = await api(
+    "knowledge/documents/" +
+      encodeURIComponent(hit.document_id) +
+      "/versions/" +
+      hit.document_version,
+  );
+}
+async function loadCitationSources() {
+  const ids = citationVersion.value?.source_record_ids || [];
+  citationSources.value = await Promise.all(
+    ids.map((id) => api("knowledge/records/" + encodeURIComponent(id))),
+  );
+}
+async function deletedDocument(id) {
+  documentDrawers.get(id)?.close();
+  activeDocumentId.value = "";
+  await refresh();
+}
+async function deletedRecord(id) {
+  recordDrawers.get(id)?.close();
+  activeRecordId.value = "";
+  await refresh();
 }
 async function importText(event) {
   const f = event.target.files?.[0];
@@ -418,45 +587,24 @@ onBeforeUnmount(() => {
       </header>
       <div class="list-scroll">
         <p class="error" role="alert" v-if="error">{{ error }}</p>
+        <p v-if="syncWarning" class="error" role="status">{{ syncWarning }}</p>
 
-        <template v-if="tab === 'overview'"
-          ><div class="stats">
-            <article>
-              <small>知识库</small><strong>{{ bases.length }}</strong>
-            </article>
-            <article>
-              <small>文档</small><strong>{{ docs.length }}</strong>
-            </article>
-            <article>
-              <small>待审核来源</small
-              ><strong>{{
-                records.filter((r) => r.status === "ready_for_review").length
-              }}</strong>
-            </article>
-          </div>
-          <article>
-            <h2>本页知识库</h2>
-            <p v-if="!bases.length">暂无知识库，请先创建。</p>
-            <p v-for="b in bases" :key="b.id">
-              {{ b.name }} · {{ b.enabled ? "启用" : "停用" }} ·
-              <code>{{ b.id }}</code>
-            </p>
-            <small
-              >此页库列表同时用于文档和 Key
-              的库选择，可通过上方分页查看更多。</small
-            >
-          </article>
-          <article>
-            <h2>服务边界</h2>
-            <p>知识管理与资料处理均在本服务内，模型平台关闭不影响使用。</p>
-            <p>
-              知识接口：<code>{{ config.knowledge_base_url }}</code>
-            </p>
-
-            <p v-if="!config.knowledge_connected" class="error">
-              尚未配置服务间凭据，请填写服务器 .env。
-            </p>
-          </article>
+        <template v-if="tab === 'overview'">
+          <OverviewPanel
+            :overview="overview"
+            :config="config"
+            :busy="busy"
+            @documents="
+              (base, status) => action(() => showDocuments(base, status))
+            "
+            @search="
+              (base) => {
+                selectedBase = base;
+                tab = 'search';
+              }
+            "
+            @jobs="tab = 'jobs'"
+          />
           <WorkDrawer ref="baseDrawer" :error="error" create title="新建知识库">
             <h2>新建知识库</h2>
             <form
@@ -493,6 +641,20 @@ onBeforeUnmount(() => {
           </div>
           <div class="filter-bar">
             <label
+              >所属知识库<select
+                v-model="documentBase"
+                :disabled="busy"
+                @change="
+                  action(() => showDocuments(documentBase, documentStatus))
+                "
+              >
+                <option value="">全部知识库</option>
+                <option v-for="b in bases" :key="b.id" :value="b.id">
+                  {{ b.name }}
+                </option>
+              </select></label
+            >
+            <label
               >搜索本页文档<input
                 v-model="documentQuery"
                 placeholder="输入标题或环境"
@@ -510,6 +672,119 @@ onBeforeUnmount(() => {
             AI 提炼未启用或模型配置不完整。请在 Knowledge 的 .env 配置后重启 API
             与 Worker；规则草稿仍可使用。
           </p>
+          <div class="batch-toolbar">
+            <label class="check-label"
+              ><input
+                type="checkbox"
+                :checked="allVisibleSelected"
+                :indeterminate="
+                  selectedDocuments.length > 0 && !allVisibleSelected
+                "
+                :disabled="busy || !eligibleDocs.length"
+                @change="selectVisible"
+              />选择本页待审核（最多 100 篇）</label
+            >
+            <span>已选择 {{ selectedDocuments.length }} 篇</span>
+            <button
+              :disabled="busy || !!syncWarning || !selectedDocuments.length"
+              @click="beginBatch"
+            >
+              批量发布
+            </button>
+            <button
+              v-if="selectedDocuments.length"
+              class="secondary"
+              :disabled="busy"
+              @click="selections = {}"
+            >
+              清空选择
+            </button>
+          </div>
+          <section
+            v-if="batchResult"
+            class="batch-result"
+            role="status"
+            aria-label="批量发布结果"
+          >
+            <strong
+              >{{ batchResult.queued }} 篇已提交索引，{{
+                batchResult.failed
+              }}
+              篇未提交</strong
+            >
+            <p>
+              提交不等于发布完成。Worker
+              索引成功后才进入检索；旧发布版本在此期间继续可用。
+            </p>
+            <ul v-if="batchResult.failed">
+              <li
+                v-for="item in batchResult.results.filter(
+                  (row) => row.status === 'failed',
+                )"
+                :key="item.document_id"
+              >
+                {{ batchResult.titles[item.document_id] }}：{{
+                  item.error?.message
+                }}（{{ item.error?.code }}）
+              </li>
+            </ul>
+            <button class="secondary" @click="tab = 'jobs'">
+              查看处理任务
+            </button>
+          </section>
+          <dialog
+            ref="batchDialog"
+            class="batch-dialog"
+            aria-labelledby="batch-title"
+            @cancel="busy && $event.preventDefault()"
+          >
+            <h2 id="batch-title">确认批量发布</h2>
+            <p>
+              将提交以下
+              {{ batchSnapshot.length }}
+              篇草稿。仅发布此处所列修订，审核后发生变化的文档会被拒绝。
+            </p>
+            <p v-if="error" class="error" role="alert">{{ error }}</p>
+            <ul class="batch-review-list">
+              <li v-for="doc in batchSnapshot" :key="doc.id">
+                <strong>{{ doc.title }}</strong
+                ><small
+                  >{{ ownership(doc).base }} · {{ ownership(doc).source }} ·
+                  修订 {{ doc.revision
+                  }}{{
+                    doc.published_version
+                      ? " · 替换已发布版本 v" + doc.published_version
+                      : " · 首次发布"
+                  }}</small
+                >
+              </li>
+            </ul>
+            <label class="check-label"
+              ><input
+                v-model="batchReviewed"
+                type="checkbox"
+                :disabled="busy"
+              />我已逐篇审核内容、来源和适用范围</label
+            >
+            <div class="batch-dialog-actions">
+              <button
+                class="secondary"
+                :disabled="busy"
+                @click="batchDialog.close()"
+              >
+                取消</button
+              ><button
+                :disabled="busy || !batchReviewed"
+                @click="action(submitBatch)"
+              >
+                {{
+                  busy
+                    ? "正在提交…"
+                    : "确认发布 " + batchSnapshot.length + " 篇"
+                }}
+              </button>
+            </div>
+          </dialog>
           <dialog ref="editorDialog" class="work-drawer" @close="editor = null">
             <article v-if="editor" id="document-editor">
               <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -527,14 +802,6 @@ onBeforeUnmount(() => {
                   ×
                 </button>
               </div>
-              <section v-if="editor.source_record_id" class="detail-section">
-                <h3>来源对照 <small>AI 结论需逐条核对证据</small></h3>
-                <pre>{{
-                  records.find((r) => r.id === editor.source_record_id)
-                    ?.payload ||
-                  "来源不在当前分页，请到记录收件箱查看；草稿末尾也保留规则证据对照。"
-                }}</pre>
-              </section>
               <form @submit.prevent="action(save)">
                 <label
                   >知识库<select
@@ -576,195 +843,49 @@ onBeforeUnmount(() => {
             :error="error"
             v-for="d in visibleDocs"
             :key="d.id"
+            :ref="
+              (drawer) =>
+                drawer
+                  ? documentDrawers.set(d.id, drawer)
+                  : documentDrawers.delete(d.id)
+            "
             :title="d.title"
+            :ownership="ownership(d)"
+            selectable
+            :selected="!!selections[d.id]"
+            :selection-disabled="
+              busy ||
+              d.status !== 'draft' ||
+              d.knowledge_base_enabled === false ||
+              (!selections[d.id] && selectedDocuments.length >= 100)
+            "
+            @select="(checked) => toggleSelection(d, checked)"
             :summary="
-              '修订 ' +
+              '草稿修订 ' +
               d.revision +
               ' · 发布版本 ' +
               (d.published_version ?? '未发布')
             "
             :status="statusText(d.status)"
+            :before-close="() => documentPanels.get(d.id)?.canClose() !== false"
             wide
-            @open="action(() => loadComparison(d))"
-            @close="closeDocument(d)"
+            @open="activeDocumentId = d.id"
+            @close="activeDocumentId = ''"
           >
-            <form
-              v-if="editor?.id === d.id"
-              class="inline-detail-form"
-              @submit.prevent="action(save)"
-            >
-              <div class="detail-heading">
-                <div>
-                  <small>文档工作区</small>
-                  <h2>编辑草稿</h2>
-                </div>
-                <span class="badge draft">修订 {{ d.revision }}</span>
-              </div>
-              <div class="detail-grid">
-                <label
-                  >知识库<select v-model="editor.knowledge_base_id" disabled>
-                    <option v-for="b in bases" :value="b.id">
-                      {{ b.name }}
-                    </option>
-                  </select></label
-                >
-                <label
-                  >环境<input
-                    v-model="editor.environment"
-                    placeholder="例如 production"
-                /></label>
-                <label class="full"
-                  >标题<input v-model="editor.title" required maxlength="200"
-                /></label>
-                <label class="full"
-                  >正文（纯文本 / Markdown）<textarea
-                    v-model="editor.content"
-                    rows="18"
-                    required
-                  ></textarea>
-                </label>
-              </div>
-              <section v-if="editor.source_record_id" class="detail-section">
-                <h3>来源证据</h3>
-                <pre>{{
-                  records.find((r) => r.id === editor.source_record_id)
-                    ?.payload || "来源不在当前分页，请到记录收件箱查看。"
-                }}</pre>
-              </section>
-              <div class="form-actions">
-                <button :disabled="busy">保存草稿</button
-                ><button
-                  type="button"
-                  class="secondary"
-                  @click="cancelInlineEdit"
-                >
-                  取消
-                </button>
-              </div>
-            </form>
-            <template v-else>
-              <div class="row">
-                <h2>{{ d.title }}</h2>
-                <span :class="['badge', d.status]">{{
-                  statusText(d.status)
-                }}</span>
-              </div>
-              <p>
-                修订 {{ d.revision }} · 发布版本
-                {{ d.published_version ?? "未发布" }}
-              </p>
-              <p v-if="d.source_record_id" class="source-reference">
-                来源：{{ d.source_title || "未命名任务" }} ·
-                {{ d.source_installation_id || "未知客户端" }} · 修订
-                {{ d.source_revision ?? "—" }}
-              </p>
-              <button
-                class="secondary"
-                @click="editInline(d)"
-                :disabled="d.status === 'indexing'"
-              >
-                编辑
-              </button>
-
-              <button
-                @click="action(() => publish(d))"
-                :disabled="busy || d.status === 'indexing'"
-              >
-                审核并发布
-              </button>
-              <button
-                v-if="d.source_record_id"
-                class="secondary"
-                :disabled="
-                  busy ||
-                  !config.ai_refinement_ready ||
-                  d.status !== 'draft' ||
-                  d.published_version != null
-                "
-                @click="action(() => refine(d))"
-              >
-                AI 重新提炼
-              </button>
-              <p
-                v-if="
-                  jobs.some((j) => j.kind === 'refine' && j.target_id === d.id)
-                "
-              >
-                AI 提炼：{{
-                  jobs.find((j) => j.kind === "refine" && j.target_id === d.id)
-                    ?.status
-                }}；失败时原草稿保留，可重新提炼。成功结果仍需人工核对。
-              </p>
-              <div v-if="refineJob(d)?.error" role="status">
-                <p>{{ refinementError(refineJob(d).error) }}</p>
-                <small
-                  >错误：{{ refineJob(d).error.split(":")[0] }} · 任务 ID：{{
-                    refineJob(d).id
-                  }}</small
-                >
-                <p v-if="refineJob(d).error.includes(':')">
-                  Admin 请求 ID：{{
-                    refineJob(d).error.split(":")[1]
-                  }}（可在调用监控中查询）
-                </p>
-              </div>
-              <button
-                class="secondary"
-                @click="
-                  action(async () => {
-                    await api(
-                      'knowledge/documents/' + d.id + '/unpublish',
-                      'POST',
-                    );
-                    await refresh();
-                  })
-                "
-                :disabled="busy"
-              >
-                下架 / 取消发布
-              </button>
-
-              <section class="inline-comparison detail-section">
-                <h3>提炼前后对照</h3>
-                <p v-if="comparison?.comparison">
-                  对照结果修订 {{ comparison.comparison.applied_revision }} ·
-                  当前修订
-                  {{
-                    d.revision
-                  }}。高亮为本侧独有行；历史提炼结果不代表当前草稿。
-                </p>
-                <div v-if="comparison?.comparison" class="comparison-grid">
-                  <section
-                    v-for="side in ['before', 'after']"
-                    :key="side"
-                    :class="['comparison-pane', side]"
-                  >
-                    <h3>
-                      {{
-                        side === "before"
-                          ? "提炼前 · 历史草稿"
-                          : "提炼后 · AI 结果"
-                      }}
-                    </h3>
-                    <div class="comparison-content" tabindex="0">
-                      <div
-                        v-for="line in comparedLines[side]"
-                        :key="line.number"
-                        :class="['diff-line', { changed: line.changed }]"
-                      >
-                        <span class="line-number">{{ line.number }}</span>
-                        <pre>{{ line.text || " " }}</pre>
-                      </div>
-                    </div>
-                  </section>
-                </div>
-                <p v-else>暂无成功提炼对照，请查看当前草稿并核对来源。</p>
-              </section>
-              <section class="detail-section">
-                <h3>当前草稿 · 修订 {{ d.revision }}</h3>
-                <pre>{{ d.content }}</pre>
-              </section>
-            </template>
+            <DocumentDetails
+              v-if="activeDocumentId === d.id"
+              :ref="
+                (panel) =>
+                  panel
+                    ? documentPanels.set(d.id, panel)
+                    : documentPanels.delete(d.id)
+              "
+              :document="d"
+              :api="api"
+              :ai-ready="config.ai_refinement_ready"
+              @changed="action(refresh)"
+              @deleted="action(() => deletedDocument(d.id))"
+            />
           </WorkDrawer>
           <p v-if="!visibleDocs.length" class="empty-state">
             {{
@@ -785,45 +906,26 @@ onBeforeUnmount(() => {
             :error="error"
             v-for="r in records"
             :key="r.id"
+            :ref="
+              (drawer) =>
+                drawer
+                  ? recordDrawers.set(r.id, drawer)
+                  : recordDrawers.delete(r.id)
+            "
             :title="r.payload?.title || r.source_record_id"
             :summary="r.installation_id + ' · 修订 ' + r.source_revision"
             :status="statusText(r.status)"
+            @open="activeRecordId = r.id"
+            @close="activeRecordId = ''"
           >
-            <div class="row">
-              <h2>{{ r.payload?.title || r.source_record_id }}</h2>
-              <span :class="['badge', r.status]">{{
-                statusText(r.status)
-              }}</span>
-            </div>
-            <p>
-              客户端 {{ r.installation_id }} · 来源修订 {{ r.source_revision }}
-            </p>
-            <section class="detail-section">
-              <h3>脱敏来源</h3>
-              <pre>{{ JSON.stringify(r.payload, null, 2) }}</pre>
-            </section>
-            <button
-              v-if="
-                ['received', 'ready_for_review', 'failed'].includes(r.status)
-              "
-              :disabled="busy"
-              @click="
-                action(async () => {
-                  if (
-                    !confirm(
-                      '拒绝此来源及未发布草稿？正文保留用于审计，不会发布或继续处理。',
-                    )
-                  )
-                    return;
-                  await api('knowledge/records/' + r.id + '/reject', 'POST');
-                  await refresh();
-                })
-              "
-            >
-              拒绝审核
-            </button>
-          </WorkDrawer></template
-        >
+            <SourceDetails
+              v-if="activeRecordId === r.id"
+              :record-id="r.id"
+              :api="api"
+              @changed="action(refresh)"
+              @deleted="action(() => deletedRecord(r.id))"
+            /> </WorkDrawer
+        ></template>
         <template v-if="tab === 'keys'"
           ><WorkDrawer
             :error="error"
@@ -901,24 +1003,101 @@ onBeforeUnmount(() => {
           </WorkDrawer></template
         >
         <template v-if="tab === 'search'"
-          ><article>
-            <form @submit.prevent="action(search)">
+          ><article class="search-panel">
+            <div class="section-heading">
+              <div>
+                <h2>检索已发布知识</h2>
+                <p>选择知识库，使用问题、命令或错误码验证命中结果。</p>
+              </div>
+            </div>
+            <form class="search-form" @submit.prevent="action(search)">
               <label
-                >知识库<select v-model="selectedBase" required>
-                  <option v-for="b in bases" :value="b.id">{{ b.name }}</option>
+                >知识库<select
+                  v-model="selectedBase"
+                  aria-label="知识库"
+                  required
+                  :disabled="busy"
+                >
+                  <option value="" disabled>请选择知识库</option>
+                  <option
+                    v-for="b in bases"
+                    :value="b.id"
+                    :disabled="!b.enabled"
+                  >
+                    {{ b.name }}{{ b.enabled ? "" : "（停用）" }}
+                  </option>
                 </select></label
               ><label
                 >查询<input
                   v-model="query"
                   required
+                  :disabled="busy"
+                  maxlength="2000"
                   placeholder="输入问题、命令、路径或错误码" /></label
-              ><button :disabled="busy">检索已发布知识</button>
+              ><button :disabled="busy || !selectedBase || !query.trim()">
+                {{ busy ? "正在检索…" : "检索已发布知识" }}
+              </button>
             </form>
-            <p v-if="searchMode">模式：{{ searchMode }}</p>
+            <div
+              v-if="selectedSearchCorpus"
+              class="search-corpus"
+              aria-label="所选知识库状态"
+            >
+              <span
+                ><strong>{{ selectedSearchCorpus.searchable }}</strong>
+                篇可检索</span
+              ><span>{{ selectedSearchCorpus.drafts }} 篇待审核</span
+              ><span>{{ selectedSearchCorpus.indexing }} 篇索引中</span
+              ><button
+                v-if="selectedSearchCorpus.drafts"
+                class="secondary"
+                :disabled="busy"
+                @click="action(() => showDocuments(selectedBase, 'draft'))"
+              >
+                查看待审核文档
+              </button>
+            </div>
+            <p
+              v-if="!hasSearched && config.embedding_enabled === false"
+              class="search-info"
+            >
+              当前使用关键词检索，无需配置
+              Embedding。只有已发布且索引完成的文档参与检索。
+            </p>
+            <p v-if="searchMode" class="search-mode" role="status">
+              检索完成 · {{ hits.length }} 个片段 · 检索模式：{{
+                { keyword_only: "关键词检索", hybrid: "关键词 + 向量混合检索" }[
+                  searchMode
+                ] || searchMode
+              }}
+            </p>
+            <p v-if="searchEmbedding === 'disabled'" class="search-info">
+              未配置向量服务，关键词检索正常可用；这不是检索错误。
+            </p>
+            <p
+              v-for="warning in searchWarnings"
+              :key="warning"
+              class="search-warning"
+              role="status"
+            >
+              {{ warning }}
+            </p>
+            <p v-if="searchTruncated" role="status">
+              结果达到内容长度限制，部分正文已截断。请打开引用版本查看完整内容。
+            </p>
+            <p v-if="hasSearched && !hits.length" class="empty-state">
+              {{ emptySearchMessage }}
+            </p>
           </article>
           <WorkDrawer
             :title="h.title"
-            :summary="'版本 ' + h.document_version + ' · ' + h.citation.label"
+            :summary="
+              baseName(h.knowledge_base_id || selectedBase) +
+              ' · 版本 ' +
+              h.document_version +
+              ' · ' +
+              h.citation.label
+            "
             status="检索结果"
             v-for="h in hits"
             :key="h.chunk_id"
@@ -930,8 +1109,51 @@ onBeforeUnmount(() => {
               }}
             </p>
             <pre>{{ h.content }}</pre>
-          </WorkDrawer></template
-        >
+            <button
+              class="secondary"
+              :disabled="busy"
+              @click="action(() => openCitation(h))"
+            >
+              打开引用版本
+            </button>
+          </WorkDrawer>
+          <dialog
+            ref="citationDialog"
+            class="work-drawer wide"
+            aria-label="引用版本详情"
+          >
+            <header>
+              <h2>引用版本详情</h2>
+              <button class="secondary" @click="citationDialog.close()">
+                关闭
+              </button>
+            </header>
+            <div class="drawer-content">
+              <p v-if="error" class="error" role="alert">{{ error }}</p>
+              <p v-if="!citationVersion && busy" role="status">
+                正在加载引用版本…
+              </p>
+              <VersionPreview
+                v-if="citationVersion"
+                :version="citationVersion"
+                :line-start="citationHit?.citation.line_start"
+                :line-end="citationHit?.citation.line_end"
+              />
+              <button
+                v-if="citationVersion?.source_record_ids?.length"
+                class="secondary"
+                :disabled="busy"
+                @click="action(loadCitationSources)"
+              >
+                查看引用来源快照
+              </button>
+              <SourceEvidence
+                v-for="source in citationSources"
+                :key="source.id"
+                :record="source"
+              />
+            </div></dialog
+        ></template>
         <template v-if="tab === 'jobs'"
           ><WorkDrawer
             :error="error"
@@ -962,7 +1184,11 @@ onBeforeUnmount(() => {
               }}</span>
             </div>
             <p>{{ j.target_id }} · 已尝试 {{ j.attempts }} 次</p>
-            <p v-if="j.error">{{ j.error }}</p>
+            <p v-if="j.error">
+              任务未完成。请使用任务 ID
+              <code>{{ j.id }}</code> 查看服务器日志；AI
+              提炼请打开对应文档，核对当前草稿后重新提炼。
+            </p>
             <button
               v-if="j.status === 'failed' && j.kind !== 'refine'"
               @click="
@@ -985,8 +1211,11 @@ onBeforeUnmount(() => {
       </div>
       <footer v-if="pageResource" class="list-pagination">
         <span
-          >当前列表第 {{ offsets[pageResource] / 200 + 1 }} 页 · 本页
-          {{ pageRows.length }} 条（不是全库统计）</span
+          >{{ tab === "overview" ? "知识库列表" : "当前列表" }}第
+          {{ offsets[pageResource] / 200 + 1 }} 页 · 本页
+          {{ pageRows.length }} 条{{
+            tab === "overview" ? "" : "（非总量）"
+          }}</span
         ><button
           :disabled="busy || offsets[pageResource] === 0"
           @click="action(() => changePage(-1))"

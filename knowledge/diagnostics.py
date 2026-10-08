@@ -2,21 +2,23 @@
 
 import json
 import logging
+import re
 import traceback
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime, timezone
 
 import httpx
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from .security import ApiError
 from .config import settings
+from .security import ApiError, check_sensitive
 
 AI_CODES = {
     "AI_NOT_CONFIGURED",
     "AI_INVALID_ENDPOINT",
+    "AI_INVALID_TOKEN_LIMIT",
     "AI_INPUT_TOO_LARGE",
     "AI_TIMEOUT",
     "AI_OUTPUT_TOO_LARGE",
@@ -25,8 +27,63 @@ AI_CODES = {
     "AI_STALE_DRAFT",
     "AI_SOURCE_UNAVAILABLE",
     "AI_EVIDENCE_TYPE_MISMATCH",
-    "AI_INVALID_REFERENCE",
 }
+
+METRIC_FIELDS = frozenset(
+    {
+        "step_count",
+        "evidence_count",
+        "observed_excerpt_count",
+        "summary_only_count",
+        "expectation_count",
+        "failed_step_count",
+        "unknown_execution_count",
+        "unverified_step_count",
+        "truncated_evidence_count",
+        "warning_count",
+    }
+)
+
+
+def safe_metadata(diagnostic):
+    """Allow technical fields only; callers cannot inject source text or credentials."""
+    safe = {}
+    if not isinstance(diagnostic, dict):
+        return safe
+    for key in ("stage", "request_id", "model", "prompt_version"):
+        value = diagnostic.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", value):
+            try:
+                check_sensitive(value)
+            except ApiError:
+                continue
+            safe[key] = value
+    for key in (
+        "elapsed_ms",
+        "http_status",
+        "prompt_tokens",
+        "completion_tokens",
+        "configured_output_tokens",
+        "duplicate_claim_count",
+        "claim_count",
+        "referenced_evidence_count",
+    ):
+        value = diagnostic.get(key)
+        if type(value) is int and 0 <= value <= 10**12:
+            safe[key] = value
+    if (
+        diagnostic.get("finish_reason")
+        in {None, "stop", "length", "tool_calls", "content_filter", "other"}
+        and "finish_reason" in diagnostic
+    ):
+        safe["finish_reason"] = diagnostic["finish_reason"]
+    if isinstance(diagnostic.get("quality_metrics"), dict):
+        safe["quality_metrics"] = {
+            key: value
+            for key, value in diagnostic["quality_metrics"].items()
+            if key in METRIC_FIELDS and type(value) is int and 0 <= value <= 1000000
+        }
+    return safe
 
 
 def failure_code(exc):
@@ -53,7 +110,7 @@ def failure_code(exc):
 
 def log_failure(exc, job_id, target, revision):
     info = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "event": "knowledge_refinement_failed",
         "job_id": job_id,
         "document_id": target,
@@ -61,7 +118,7 @@ def log_failure(exc, job_id, target, revision):
         "code": failure_code(exc),
         "exception_type": type(exc).__name__,
         "stage": "worker_or_database",
-        **getattr(exc, "ai_diagnostic", {}),
+        **safe_metadata(getattr(exc, "ai_diagnostic", {})),
     }
     info["stack"] = [
         {"file": frame.filename, "line": frame.lineno, "function": frame.name}
@@ -85,7 +142,27 @@ def log_failure(exc, job_id, target, revision):
         ]
     if isinstance(exc, SQLAlchemyError):
         info["database_exception_type"] = type(getattr(exc, "orig", None)).__name__
+    _write(info, logging.ERROR)
+    return info
+
+
+def log_prepared(diagnostic, source_id, source_revision):
+    info = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        # The worker may still reject a stale result. This event does not claim
+        # the result was saved, published, or semantically verified.
+        "event": "knowledge_refinement_prepared",
+        "source_record_id": source_id,
+        "source_revision": source_revision,
+        **safe_metadata(diagnostic),
+    }
+    _write(info, logging.INFO)
+    return info
+
+
+def _write(info, level):
     logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
     if not any(type(h) is logging.StreamHandler for h in logger.handlers):
         logger.addHandler(logging.StreamHandler())
     message = json.dumps(info, ensure_ascii=False)
@@ -112,5 +189,4 @@ def log_failure(exc, job_id, target, revision):
                 logger.addHandler(handler)
         except OSError:
             logger.error("worker_log_file_unavailable; diagnostic follows on stderr")
-    logger.error(message)
-    return info
+    logger.log(level, message)

@@ -1,4 +1,5 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,9 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     ai_model: str = ""
     worker_log_path: str = "data/worker.log"
+    worker_retry_base_seconds: float = 2
+    worker_poll_seconds: float = 1
+    ai_max_output_tokens: int | None = None
 
     @property
     def embedding_enabled(self):

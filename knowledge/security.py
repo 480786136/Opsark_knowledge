@@ -4,11 +4,13 @@ import secrets
 import time
 from collections import defaultdict, deque
 from threading import Lock
+
 from fastapi import Depends, Request
 from sqlalchemy import select
+
+from .config import settings
 from .db import get_db
 from .models import ApiKey, KnowledgeBase
-from .config import settings
 
 
 class ApiError(Exception):

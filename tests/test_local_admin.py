@@ -1,8 +1,9 @@
 from argon2 import PasswordHasher
 from sqlalchemy import select
-from knowledge.models import KnowledgeAdmin, Audit
-from knowledge.admin import attempts
 from test_workflow import env as source_env
+
+from knowledge.admin import attempts
+from knowledge.models import Audit, KnowledgeAdmin
 
 env = source_env
 

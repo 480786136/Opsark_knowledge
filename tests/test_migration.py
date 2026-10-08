@@ -1,7 +1,8 @@
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
+
 from sqlalchemy import create_engine, inspect, text
 
 
@@ -21,7 +22,11 @@ def test_additive_local_admin_migration(tmp_path):
         )
     environment = {**os.environ, "DATABASE_URL": url}
     root = Path(__file__).resolve().parents[1]
-    for args in [("stamp", "knowledge_0001"), ("upgrade", "head"), ("upgrade", "head")]:
+    for args in [
+        ("stamp", "knowledge_0001"),
+        ("upgrade", "knowledge_0002"),
+        ("upgrade", "knowledge_0002"),
+    ]:
         subprocess.run(
             [sys.executable, "-m", "alembic", *args],
             cwd=root,

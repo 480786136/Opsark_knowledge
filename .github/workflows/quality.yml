@@ -1,0 +1,88 @@
+name: Knowledge release checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-and-web:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: constraints.txt
+      - run: python -m pip install -c constraints.txt -e '.[test]'
+      - run: python -m ruff check --select E9,F63,F7,F82 knowledge migrations tests scripts
+      - run: python -m pytest -q tests scripts/test_replay_core_logs.py
+      - run: python scripts/smoke_workflow.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - run: python scripts/smoke_browser.py
+
+  postgres-pgvector:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17
+        env:
+          POSTGRES_USER: knowledge_ci
+          POSTGRES_PASSWORD: isolated_ci_database_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd 'pg_isready -U knowledge_ci -d postgres'
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install -c constraints.txt -e '.[test]'
+      - name: Use matching PostgreSQL backup client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+      - name: PostgreSQL regressions, migration and concurrency cases
+        env:
+          OPSARK_TEST_POSTGRES_ADMIN_URL: postgresql://knowledge_ci:isolated_ci_database_only@127.0.0.1:5432/postgres
+        run: python -m pytest -q tests scripts/test_replay_core_logs.py
+      - name: Fresh migrations, HTTP lifecycle and backup restore on PostgreSQL
+        env:
+          SMOKE_PG_ADMIN_URL: postgresql://knowledge_ci:isolated_ci_database_only@127.0.0.1:5432/postgres
+        run: python scripts/smoke_workflow.py --postgres-admin-url-env SMOKE_PG_ADMIN_URL
+      - name: Synthetic retrieval correctness and latency baseline
+        env:
+          SMOKE_PG_ADMIN_URL: postgresql://knowledge_ci:isolated_ci_database_only@127.0.0.1:5432/postgres
+        run: python scripts/benchmark_retrieval.py --postgres-admin-url-env SMOKE_PG_ADMIN_URL --documents 500 --queries 200
+
+  container-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag opsark-knowledge:ci .

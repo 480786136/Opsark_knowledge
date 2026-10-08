@@ -2,7 +2,9 @@
 
 import re
 
-RULESET = "knowledge-draft-v2"
+from .evidence import evidence_kind, prepare_evidence
+
+RULESET = "knowledge-draft-v3"
 STATUS = {
     "succeeded": "执行成功",
     "failed": "失败",
@@ -26,6 +28,7 @@ def prepare_draft(record):
     p = record.payload
     steps = p["steps"]
     context = p.get("context", {})
+    prepared = prepare_evidence(p)
     issues = []
     sections = [
         f"# {p['title']}",
@@ -43,22 +46,34 @@ def prepare_draft(record):
             or "来源未提供版本信息"
         ),
         "步骤说明中的前提与预期需要和下方实际输出核对；未出现的条件不视为已满足。",
-        "## 操作步骤",
     ]
+    runtime = context.get("runtime") or {}
+    sections.append("运行环境（来源声明，引用 record/context）：")
+    sections.extend(
+        f"- {label}：{runtime.get(key) or '未提供，使用前需确认'}"
+        for key, label in [
+            ("os", "操作系统"),
+            ("shell", "Shell"),
+            ("scope", "检查范围"),
+            ("privilege", "权限"),
+            ("visibility", "可见范围"),
+        ]
+    )
+    sections.append("## 操作步骤")
     if not steps:
         issues.append("来源没有步骤，不能据此复现操作。")
     verification, outputs = [], []
     for index, step in enumerate(steps, 1):
         sections += [
-            f"### {index}. 操作",
+            f"### {index}. 操作（步骤 ID：{step['step_id']}）",
             step["description"],
-            f"执行状态：{STATUS[step['execution_status']]}",
+            f"执行状态：{STATUS[step['execution_status']]}（客户端声明，引用 {step['step_id']}/status）",
         ]
         if step.get("command"):
             sections.append(code_block(step["command"]))
         else:
             sections.append("命令未提供；不能从步骤名称推测命令。")
-        validation = [e for e in step["evidence"] if e["kind"] == "validation"]
+        validation = [e for e in step["evidence"] if evidence_kind(e) == "validation"]
         if step["validation_status"] == "passed" and not validation:
             issues.append(
                 f"步骤 {index} 声称校验通过，但缺少独立校验证据，需人工核对。"
@@ -74,13 +89,22 @@ def prepare_draft(record):
         if step["validation_status"] == "not_run":
             verification.append("未执行独立校验；主命令观测与独立验收应区别阅读。")
         for evidence in step["evidence"]:
+            kind = evidence_kind(evidence)
             target = (
                 verification
-                if evidence["kind"] in {"validation", "observation", "expectation"}
+                if kind in {"validation", "observation", "expectation"}
+                or evidence["kind"] != "command_result"
                 else outputs
             )
+            label = {
+                "command_result": "执行输出摘录",
+                "validation": "独立校验摘录",
+                "observation": "观测摘录",
+                "expectation": "验收要求（未验证）",
+                "client_report": "来源摘要（无原始摘录）",
+            }[kind]
             target += [
-                f"步骤 {index} · 证据 {evidence['evidence_id']}",
+                f"步骤 {index} · 【{label}】 · 引用：{step['step_id']}/{evidence['evidence_id']}",
                 evidence["summary"],
             ]
             if evidence.get("excerpt"):
@@ -100,7 +124,10 @@ def prepare_draft(record):
         f"客户端报告结果：{STATUS[p['outcome']['status']]}（未由知识服务重新执行验证）。",
         p["outcome"]["summary"],
         "## 审核与复用注意事项",
-        *(f"- {issue}" for issue in issues),
+        *(
+            f"- {issue}"
+            for issue in dict.fromkeys([*issues, *prepared["quality_warnings"]])
+        ),
         "- 核对目标、适用环境、命令和验收证据后再发布；不得补写来源不存在的成功结果。",
         "## 来源与整理记录",
         f"来源记录：{record.id}",

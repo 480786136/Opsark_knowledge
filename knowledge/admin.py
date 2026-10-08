@@ -4,11 +4,13 @@ import secrets
 import time
 from collections import defaultdict, deque
 from threading import Lock
+
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+
 from .config import settings
 from .db import get_db
 from .models import KnowledgeAdmin, KnowledgeSession
@@ -114,6 +116,7 @@ def config(session=Depends(require_admin)):
     return {
         "knowledge_connected": True,
         "knowledge_base_url": "/api/v1",
+        "embedding_enabled": settings().embedding_enabled,
         "ai_refinement_ready": bool(
             settings().ai_refinement_enabled
             and settings().ai_model

@@ -1,6 +1,13 @@
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 Short = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 Tag = Annotated[str, StringConstraints(min_length=1, max_length=40)]
@@ -67,6 +74,15 @@ class RecordInput(Strict):
     tags: list[Tag] = Field(default_factory=list, max_length=20)
     redaction: Redaction
 
+    @model_validator(mode="after")
+    def unique_evidence_ids(self):
+        if len({step.step_id for step in self.steps}) != len(self.steps):
+            raise ValueError("Duplicate step IDs")
+        for step in self.steps:
+            if len({item.evidence_id for item in step.evidence}) != len(step.evidence):
+                raise ValueError("Duplicate evidence IDs")
+        return self
+
 
 class BaseInput(Strict):
     name: str = Field(min_length=1, max_length=200)
@@ -91,6 +107,7 @@ class DocumentInput(Strict):
     tags: list[Tag] = Field(default_factory=list, max_length=20)
     environment: str = Field(default="", max_length=100)
     software_names: list[Tag] = Field(default_factory=list, max_length=20)
+    context: Context = Field(default_factory=Context)
 
 
 class DraftInput(DocumentInput):
@@ -101,9 +118,28 @@ class RevisionInput(Strict):
     revision: int = Field(ge=1)
 
 
+class PublishSelection(RevisionInput):
+    document_id: Short
+
+
+class BatchPublishInput(Strict):
+    documents: list[PublishSelection] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_documents(self):
+        if len({item.document_id for item in self.documents}) != len(self.documents):
+            raise ValueError("Duplicate document IDs")
+        return self
+
+
+class SourceRevisionInput(RevisionInput):
+    source_record_id: Short
+
+
 class SearchFilters(Strict):
     environment: str | None = Field(default=None, max_length=100)
     software_names: list[Tag] = Field(default_factory=list, max_length=20)
+    software: list[Software] = Field(default_factory=list, max_length=20)
 
 
 class SearchInput(Strict):

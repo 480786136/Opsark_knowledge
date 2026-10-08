@@ -19,6 +19,8 @@ def enable(monkeypatch):
         "ai_api_key": "test-key",
         "ai_model": "test-model",
         "ai_base_url": "http://127.0.0.1:8001/v1",
+        "ai_max_output_tokens": None,
+        "worker_log_path": "",
     }.items():
         monkeypatch.setattr(settings(), key, value)
 
@@ -150,6 +152,113 @@ def test_legacy_quality_warnings_ref_does_not_reject_unconfirmed_claim(monkeypat
     _, content = refine(SimpleNamespace(payload=source, id="rec", source_revision=1))
     assert "依据：record/context" in content
     assert "quality_warnings" not in content
+
+
+@pytest.mark.parametrize("limit", [None, 1200])
+def test_optional_output_limit_and_exact_duplicate_claims(monkeypatch, limit):
+    enable(monkeypatch)
+    monkeypatch.setattr(settings(), "ai_max_output_tokens", limit)
+    original = httpx.Client
+    claim = {
+        "section": "结论边界",
+        "kind": "来源声明",
+        "text": "客户端报告部分完成",
+        "refs": ["record/outcome", "record/outcome"],
+    }
+
+    def handle(request):
+        body = json.loads(request.content)
+        if limit is None:
+            assert "max_tokens" not in body
+        else:
+            assert body["max_tokens"] == limit
+        return httpx.Response(
+            200,
+            headers={"X-Request-ID": "request-dedup"},
+            json={
+                "usage": {"prompt_tokens": 100, "completion_tokens": 90},
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "部分完成记录",
+                                    "claims": [
+                                        claim,
+                                        {**claim, "refs": ["record/outcome"]},
+                                        {**claim, "kind": "未确认"},
+                                    ],
+                                }
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        "knowledge.refinement.httpx.Client",
+        lambda **kwargs: original(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    row = SimpleNamespace(payload=record("kb"), id="source", source_revision=1)
+    _, content = refine(row)
+    assert content.count("【来源声明】客户端报告部分完成") == 1
+    assert "【未确认】客户端报告部分完成" in content
+    assert "record/outcome, record/outcome" not in content
+    assert row._ai_diagnostic["duplicate_claim_count"] == 1
+    assert row._ai_diagnostic["claim_count"] == 2
+    assert row._ai_diagnostic["referenced_evidence_count"] == 1
+    assert row._ai_diagnostic["quality_metrics"]["step_count"] == 0
+    assert row._ai_diagnostic["request_id"] == "request-dedup"
+
+
+def test_invalid_configured_output_limit_fails_before_model_call(monkeypatch):
+    enable(monkeypatch)
+    monkeypatch.setattr(settings(), "ai_max_output_tokens", 0)
+    with pytest.raises(ValueError, match="AI_INVALID_TOKEN_LIMIT"):
+        refine(SimpleNamespace(payload=record("kb"), id="source", source_revision=1))
+
+
+def test_model_fact_backed_only_by_success_summary_is_rejected(monkeypatch):
+    enable(monkeypatch)
+    source = record("kb")
+    source["steps"] = [
+        {
+            "step_id": "s",
+            "description": "检查",
+            "execution_status": "succeeded",
+            "validation_status": "passed",
+            "evidence": [
+                {
+                    "evidence_id": "e",
+                    "kind": "validation",
+                    "summary": "success",
+                    "excerpt": "",
+                }
+            ],
+        }
+    ]
+    original = httpx.Client
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(response(["s/e"]))},
+                    }
+                ]
+            },
+        )
+    )
+    monkeypatch.setattr(
+        "knowledge.refinement.httpx.Client",
+        lambda **kwargs: original(transport=transport, **kwargs),
+    )
+    with pytest.raises(ValueError, match="AI_EVIDENCE_TYPE_MISMATCH"):
+        refine(SimpleNamespace(payload=source, id="source", source_revision=1))
 
 
 @pytest.mark.parametrize(

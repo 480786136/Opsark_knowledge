@@ -14,8 +14,8 @@ from knowledge.security import _calls
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
-    engine = make_engine(f"sqlite:///{tmp_path / 'test.db'}")
+def env(tmp_path, monkeypatch, database_url):
+    engine = make_engine(database_url)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
 
@@ -27,6 +27,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings(), "knowledge_service_token", "s" * 40)
     monkeypatch.setattr(settings(), "embedding_base_url", "")
     monkeypatch.setattr(settings(), "ai_refinement_enabled", False)
+    monkeypatch.setattr(settings(), "worker_retry_base_seconds", 0)
+    monkeypatch.setattr(settings(), "worker_log_path", str(tmp_path / "worker.log"))
     _calls.clear()
     with TestClient(app) as client:
         yield client, factory, {"Authorization": "Bearer " + "s" * 40}
@@ -79,20 +81,26 @@ def test_new_source_revision_updates_existing_draft_and_exposes_source_identity(
     client, factory, service = env
     kb, auth, _ = prepare(env)
     first = record(kb)
-    assert client.post(
-        "/api/v1/records",
-        headers={**auth, "Idempotency-Key": "task-1-v1"},
-        json=first,
-    ).status_code == 202
+    assert (
+        client.post(
+            "/api/v1/records",
+            headers={**auth, "Idempotency-Key": "task-1-v1"},
+            json=first,
+        ).status_code
+        == 202
+    )
     assert run_once(factory)
 
     second = record(kb)
     second.update(source_revision=2, title="拉取项目", problem="拉取新版项目")
-    assert client.post(
-        "/api/v1/records",
-        headers={**auth, "Idempotency-Key": "task-1-v2"},
-        json=second,
-    ).status_code == 202
+    assert (
+        client.post(
+            "/api/v1/records",
+            headers={**auth, "Idempotency-Key": "task-1-v2"},
+            json=second,
+        ).status_code
+        == 202
+    )
     assert run_once(factory)
 
     with factory() as db:
@@ -160,7 +168,7 @@ def test_upload_publish_search_and_unpublish(env):
     assert len(docs) == 1 and docs[0]["status"] == "draft"
     assert "configuration file test is successful" in docs[0]["content"]
     assert "验收标准与校验证据" in docs[0]["content"]
-    assert "knowledge-draft-v2" in docs[0]["content"]
+    assert "knowledge-draft-v3" in docs[0]["content"]
     query = {"query": "Nginx 配置", "knowledge_base_ids": [kb]}
     assert (
         client.post("/api/v1/knowledge/search", headers=auth, json=query).json()["hits"]
